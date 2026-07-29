@@ -1,0 +1,172 @@
+{
+  "name": "live-gemini-code-explainer",
+  "displayName": "Echo",
+  "description": "Explore and explain selected code with Gemini Live inside VS Code.",
+  "version": "0.6.0",
+  "publisher": "YogeshRajak",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "extensionKind": [
+    "ui"
+  ],
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "gemini",
+    "live",
+    "voice",
+    "code explanation"
+  ],
+  "activationEvents": [
+    "onView:liveline.chatView",
+    "onCommand:liveline.configureApiKey"
+  ],
+  "main": "./dist/extension.js",
+  "files": [
+    "dist/**",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "check": "tsc --noEmit && eslint .",
+    "package": "npm run check && npm run build && vsce package --out echo-gemini-live-code-assistant-v0.6.0.vsix",
+    "vscode:prepublish": "npm run build"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "liveline.configureApiKey",
+        "title": "Echo: Configure Gemini API Key"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "liveline",
+          "title": "Echo",
+          "icon": "dist/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "liveline": [
+        {
+          "id": "liveline.chatView",
+          "name": "Echo",
+          "type": "webview"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Echo",
+      "properties": {
+        "liveline.voice": {
+          "type": "string",
+          "default": "Kore",
+          "enum": [
+            "Zephyr",
+            "Puck",
+            "Charon",
+            "Kore",
+            "Fenrir",
+            "Leda",
+            "Orus",
+            "Aoede",
+            "Callirrhoe",
+            "Autonoe",
+            "Enceladus",
+            "Iapetus",
+            "Umbriel",
+            "Algieba",
+            "Despina",
+            "Erinome",
+            "Algenib",
+            "Rasalgethi",
+            "Laomedeia",
+            "Achernar",
+            "Alnilam",
+            "Schedar",
+            "Gacrux",
+            "Pulcherrima",
+            "Achird",
+            "Zubenelgenubi",
+            "Vindemiatrix",
+            "Sadachbia",
+            "Sadaltager",
+            "Sulafat"
+          ],
+          "description": "Gemini prebuilt voice used for Live API responses."
+        },
+        "liveline.preferredLanguage": {
+          "type": "string",
+          "default": "English",
+          "enum": [
+            "English",
+            "Hindi",
+            "Spanish",
+            "French",
+            "German",
+            "Portuguese",
+            "Japanese",
+            "Korean",
+            "Mandarin Chinese",
+            "Arabic",
+            "Russian",
+            "Italian",
+            "Bengali",
+            "Marathi",
+            "Tamil",
+            "Telugu",
+            "Turkish",
+            "Indonesian"
+          ],
+          "description": "Language Echo asks Gemini to use for explanations."
+        },
+        "liveline.autoInterrupt": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow speaking to interrupt Gemini's current response."
+        },
+        "liveline.behavior": {
+          "type": "string",
+          "default": "professional",
+          "enum": [
+            "professional",
+            "friendly",
+            "expert"
+          ],
+          "enumDescriptions": [
+            "Clear, structured, and concise.",
+            "Approachable and conversational.",
+            "Deeply technical and precise."
+          ],
+          "description": "Explanation style used by Gemini."
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.32.0",
+    "@types/node": "^22.17.0",
+    "@types/vscode": "^1.96.0",
+    "@types/ws": "^8.18.1",
+    "@typescript-eslint/eslint-plugin": "^8.38.0",
+    "@typescript-eslint/parser": "^8.38.0",
+    "@vscode/vsce": "^3.6.0",
+    "esbuild": "^0.25.8",
+    "eslint": "^9.32.0",
+    "shiki": "^4.3.1",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.38.0",
+    "ws": "^8.18.3"
+  },
+  "dependencies": {
+    "@picovoice/pvrecorder-node": "^1.2.9",
+    "marked": "^18.0.7"
+  }
+}

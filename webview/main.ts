@@ -1,0 +1,2740 @@
+import bash from "@shikijs/langs/bash";
+import c from "@shikijs/langs/c";
+import cpp from "@shikijs/langs/cpp";
+import csharp from "@shikijs/langs/csharp";
+import css from "@shikijs/langs/css";
+import go from "@shikijs/langs/go";
+import html from "@shikijs/langs/html";
+import java from "@shikijs/langs/java";
+import javascript from "@shikijs/langs/javascript";
+import json from "@shikijs/langs/json";
+import jsonc from "@shikijs/langs/jsonc";
+import jsx from "@shikijs/langs/jsx";
+import markdown from "@shikijs/langs/markdown";
+import php from "@shikijs/langs/php";
+import python from "@shikijs/langs/python";
+import ruby from "@shikijs/langs/ruby";
+import rust from "@shikijs/langs/rust";
+import scss from "@shikijs/langs/scss";
+import sql from "@shikijs/langs/sql";
+import svelte from "@shikijs/langs/svelte";
+import tsx from "@shikijs/langs/tsx";
+import typescript from "@shikijs/langs/typescript";
+import vue from "@shikijs/langs/vue";
+import yaml from "@shikijs/langs/yaml";
+import darkPlus from "@shikijs/themes/dark-plus";
+import lightPlus from "@shikijs/themes/light-plus";
+import { createHighlighterCore } from "shiki/core";
+import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
+
+interface VsCodeApi {
+  postMessage(message: unknown): void;
+  getState(): unknown;
+  setState(state: unknown): void;
+}
+
+declare function acquireVsCodeApi(): VsCodeApi;
+
+type Behavior = "professional" | "friendly" | "expert";
+
+interface Preferences {
+  readonly voice: string;
+  readonly preferredLanguage: string;
+  readonly autoInterrupt: boolean;
+  readonly behavior: Behavior;
+}
+
+interface ContextSummary {
+  readonly fileName: string;
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly label: string;
+}
+
+interface CurrentPageSummary {
+  readonly uri: string;
+  readonly fileName: string;
+  readonly relativePath: string;
+  readonly label: string;
+}
+
+type AttachmentKind = "currentFile" | "textFile" | "image";
+
+interface AttachmentSummary {
+  readonly id: string;
+  readonly kind: AttachmentKind;
+  readonly label: string;
+}
+
+type ChatRole = "user" | "model";
+
+interface ChatMessage {
+  readonly id: string;
+  readonly role: ChatRole;
+  readonly text: string;
+  readonly visualText?: string;
+  readonly markdownBlocks?: readonly MarkdownBlock[];
+  readonly createdAt: string;
+  readonly contextLabel?: string;
+  readonly currentPageLabel?: string;
+}
+
+interface StoredChat {
+  readonly id: string;
+  readonly title: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly messages: readonly ChatMessage[];
+}
+
+interface ChatSummary {
+  readonly id: string;
+  readonly title: string;
+  readonly updatedAt: string;
+  readonly messageCount: number;
+}
+
+interface PendingTextSubmission {
+  readonly requestId: string;
+  readonly text: string;
+  readonly chatId: string;
+  readonly includeCurrentPage: boolean;
+  readonly currentPageUri?: string;
+  readonly attachmentIds: readonly string[];
+}
+
+interface ServerContent {
+  readonly inputTranscription?: { readonly text?: string };
+  readonly outputTranscription?: { readonly text?: string };
+  readonly modelTurn?: {
+    readonly parts?: readonly {
+      readonly inlineData?: {
+        readonly data?: string;
+        readonly mimeType?: string;
+      };
+      readonly text?: string;
+    }[];
+  };
+  readonly interrupted?: boolean;
+  readonly turnComplete?: boolean;
+}
+
+interface MarkdownBlock {
+  readonly id: string;
+  readonly markdown: string;
+}
+
+interface GeminiFunctionCall {
+  readonly id?: string;
+  readonly name?: string;
+  readonly args?: Readonly<Record<string, unknown>>;
+}
+
+interface GeminiToolCall {
+  readonly functionCalls?: readonly GeminiFunctionCall[];
+}
+
+interface GeminiServerMessage {
+  readonly error?: {
+    readonly message?: string;
+    readonly status?: string;
+  };
+  readonly setupComplete?: unknown;
+  readonly serverContent?: ServerContent;
+  readonly toolCall?: GeminiToolCall;
+}
+
+interface HostMessage {
+  readonly type?: string;
+  readonly apiConfigured?: boolean;
+  readonly configured?: boolean;
+  readonly preferences?: Preferences;
+  readonly selection?: ContextSummary;
+  readonly context?: ContextSummary;
+  readonly currentPage?: CurrentPageSummary;
+  readonly payload?: unknown;
+  readonly message?: string;
+  readonly code?: number;
+  readonly reason?: string;
+  readonly intentional?: boolean;
+  readonly requestId?: string;
+  readonly actionId?: string;
+  readonly applyTargetId?: string;
+  readonly targetId?: string;
+  readonly files?: readonly string[];
+  readonly attachments?: readonly AttachmentSummary[];
+  readonly chat?: StoredChat;
+  readonly chatId?: string;
+  readonly chats?: readonly ChatSummary[];
+  readonly text?: string;
+  readonly level?: number;
+  readonly muted?: boolean;
+}
+
+interface TranscriptMessage {
+  readonly id: string;
+  readonly role: ChatRole;
+  readonly wrapper: HTMLElement;
+  readonly content: HTMLElement;
+  spokenText: string;
+  visualText: string;
+  markdownBlocks: MarkdownBlock[];
+  closed: boolean;
+  renderVersion: number;
+  renderBusy: boolean;
+  renderQueued: boolean;
+  readonly applyTargetId?: string;
+  readonly contextLabel?: string;
+  readonly currentPageLabel?: string;
+}
+
+const OUTPUT_SAMPLE_RATE = 24_000;
+const highlighterPromise = createHighlighterCore({
+  themes: [lightPlus, darkPlus],
+  langs: [
+    bash,
+    c,
+    cpp,
+    csharp,
+    css,
+    go,
+    html,
+    java,
+    javascript,
+    json,
+    jsonc,
+    jsx,
+    markdown,
+    php,
+    python,
+    ruby,
+    rust,
+    scss,
+    sql,
+    svelte,
+    tsx,
+    typescript,
+    vue,
+    yaml
+  ],
+  engine: createJavaScriptRegexEngine()
+});
+
+const VOICES = [
+  ["Zephyr", "Bright"],
+  ["Puck", "Upbeat"],
+  ["Charon", "Informative"],
+  ["Kore", "Firm"],
+  ["Fenrir", "Excitable"],
+  ["Leda", "Youthful"],
+  ["Orus", "Firm"],
+  ["Aoede", "Breezy"],
+  ["Callirrhoe", "Easy-going"],
+  ["Autonoe", "Bright"],
+  ["Enceladus", "Breathy"],
+  ["Iapetus", "Clear"],
+  ["Umbriel", "Easy-going"],
+  ["Algieba", "Smooth"],
+  ["Despina", "Smooth"],
+  ["Erinome", "Clear"],
+  ["Algenib", "Gravelly"],
+  ["Rasalgethi", "Informative"],
+  ["Laomedeia", "Upbeat"],
+  ["Achernar", "Soft"],
+  ["Alnilam", "Firm"],
+  ["Schedar", "Even"],
+  ["Gacrux", "Mature"],
+  ["Pulcherrima", "Forward"],
+  ["Achird", "Friendly"],
+  ["Zubenelgenubi", "Casual"],
+  ["Vindemiatrix", "Gentle"],
+  ["Sadachbia", "Lively"],
+  ["Sadaltager", "Knowledgeable"],
+  ["Sulafat", "Warm"]
+] as const;
+
+const LANGUAGES = [
+  "English",
+  "Hindi",
+  "Spanish",
+  "French",
+  "German",
+  "Portuguese",
+  "Japanese",
+  "Korean",
+  "Mandarin Chinese",
+  "Arabic",
+  "Russian",
+  "Italian",
+  "Bengali",
+  "Marathi",
+  "Tamil",
+  "Telugu",
+  "Turkish",
+  "Indonesian"
+] as const;
+
+const vscode = acquireVsCodeApi();
+
+function requiredElement<T extends HTMLElement>(id: string): T {
+  const element = document.getElementById(id);
+  if (!element) {
+    throw new Error(`Missing required element: ${id}`);
+  }
+  return element as T;
+}
+
+const elements = {
+  apiKeyInput: requiredElement<HTMLInputElement>("apiKeyInput"),
+  apiRequiredCard: requiredElement<HTMLElement>("apiRequiredCard"),
+  apiStatusDot: requiredElement<HTMLElement>("apiStatusDot"),
+  apiStatusText: requiredElement<HTMLElement>("apiStatusText"),
+  attachFileButton:
+    requiredElement<HTMLButtonElement>("attachFileButton"),
+  attachImageButton:
+    requiredElement<HTMLButtonElement>("attachImageButton"),
+  attachmentButton:
+    requiredElement<HTMLButtonElement>("attachmentButton"),
+  attachmentMenu: requiredElement<HTMLElement>("attachmentMenu"),
+  attachmentList: requiredElement<HTMLElement>("attachmentList"),
+  autoInterruptInput:
+    requiredElement<HTMLInputElement>("autoInterruptInput"),
+  backToChatButton: requiredElement<HTMLButtonElement>("backToChatButton"),
+  backFromHistoryButton:
+    requiredElement<HTMLButtonElement>("backFromHistoryButton"),
+  behaviorSelect: requiredElement<HTMLSelectElement>("behaviorSelect"),
+  chatPanel: requiredElement<HTMLElement>("chatPanel"),
+  chatHistoryList: requiredElement<HTMLElement>("chatHistoryList"),
+  clearButton: requiredElement<HTMLButtonElement>("clearButton"),
+  configureApiButton:
+    requiredElement<HTMLButtonElement>("configureApiButton"),
+  currentPageBar: requiredElement<HTMLElement>("currentPageBar"),
+  currentPageLabel: requiredElement<HTMLElement>("currentPageLabel"),
+  currentPageMention:
+    requiredElement<HTMLButtonElement>("currentPageMention"),
+  currentPageMentionLabel:
+    requiredElement<HTMLElement>("currentPageMentionLabel"),
+  emptyState: requiredElement<HTMLElement>("emptyState"),
+  emptyHistory: requiredElement<HTMLElement>("emptyHistory"),
+  errorBox: requiredElement<HTMLElement>("errorBox"),
+  headerStatus: requiredElement<HTMLElement>("headerStatus"),
+  languageSelect: requiredElement<HTMLSelectElement>("languageSelect"),
+  historyButton: requiredElement<HTMLButtonElement>("historyButton"),
+  historyPanel: requiredElement<HTMLElement>("historyPanel"),
+  micMeter: requiredElement<HTMLElement>("micMeter"),
+  mentionMenu: requiredElement<HTMLElement>("mentionMenu"),
+  muteMicButton: requiredElement<HTMLButtonElement>("muteMicButton"),
+  orbCanvas: requiredElement<HTMLCanvasElement>("orbCanvas"),
+  orbMode: requiredElement<HTMLElement>("orbMode"),
+  reconnectHint: requiredElement<HTMLElement>("reconnectHint"),
+  newChatButton: requiredElement<HTMLButtonElement>("newChatButton"),
+  newChatFromHistoryButton:
+    requiredElement<HTMLButtonElement>("newChatFromHistoryButton"),
+  removeApiButton: requiredElement<HTMLButtonElement>("removeApiButton"),
+  removeCurrentPageButton:
+    requiredElement<HTMLButtonElement>("removeCurrentPageButton"),
+  saveApiButton: requiredElement<HTMLButtonElement>("saveApiButton"),
+  savePreferencesButton:
+    requiredElement<HTMLButtonElement>("savePreferencesButton"),
+  selectionBar: requiredElement<HTMLElement>("selectionBar"),
+  selectionLabel: requiredElement<HTMLElement>("selectionLabel"),
+  sendButton: requiredElement<HTMLButtonElement>("sendButton"),
+  sessionButton: requiredElement<HTMLButtonElement>("sessionButton"),
+  sessionTimer: requiredElement<HTMLElement>("sessionTimer"),
+  settingsButton: requiredElement<HTMLButtonElement>("settingsButton"),
+  settingsFeedback: requiredElement<HTMLElement>("settingsFeedback"),
+  settingsPanel: requiredElement<HTMLElement>("settingsPanel"),
+  statusDot: requiredElement<HTMLElement>("statusDot"),
+  statusLabel: requiredElement<HTMLElement>("statusLabel"),
+  stopPlaybackButton:
+    requiredElement<HTMLButtonElement>("stopPlaybackButton"),
+  textForm: requiredElement<HTMLFormElement>("textForm"),
+  textInput: requiredElement<HTMLTextAreaElement>("textInput"),
+  transcript: requiredElement<HTMLElement>("transcript"),
+  voiceSelect: requiredElement<HTMLSelectElement>("voiceSelect"),
+  voiceStage: requiredElement<HTMLElement>("voiceStage"),
+  debugToggle: requiredElement<HTMLButtonElement>("debugToggle"),
+  debugPanel: requiredElement<HTMLElement>("debugPanel"),
+  debugEntries: requiredElement<HTMLElement>("debugEntries"),
+  debugBadge: requiredElement<HTMLElement>("debugBadge"),
+  debugClearButton: requiredElement<HTMLButtonElement>("debugClearButton"),
+};
+
+const state = {
+  activeChatCreatedAt: undefined as string | undefined,
+  activeChatId: undefined as string | undefined,
+  activeChatTitle: undefined as string | undefined,
+  analyser: undefined as AnalyserNode | undefined,
+  analyserData: undefined as Uint8Array<ArrayBuffer> | undefined,
+  apiConfigured: false,
+  attachedCurrentPage: false,
+  attachments: [] as readonly AttachmentSummary[],
+  audioContext: undefined as AudioContext | undefined,
+  chatMessages: [] as ChatMessage[],
+  chats: [] as readonly ChatSummary[],
+  currentModelMessage: undefined as TranscriptMessage | undefined,
+  currentUserMessage: undefined as TranscriptMessage | undefined,
+  isConnecting: false,
+  masterGain: undefined as GainNode | undefined,
+  micLevel: 0,
+  micMuted: false,
+  mentionRange: undefined as { start: number; end: number } | undefined,
+  nextPlaybackTime: 0,
+  pendingModelApplyTargetId: undefined as string | undefined,
+  pendingTextSubmission: undefined as PendingTextSubmission | undefined,
+  pendingVoiceContext: undefined as ContextSummary | undefined,
+  playbackSources: new Set<AudioBufferSourceNode>(),
+  preferences: {
+    voice: "Kore",
+    preferredLanguage: "English",
+    autoInterrupt: true,
+    behavior: "professional"
+  } as Preferences,
+  selection: undefined as ContextSummary | undefined,
+  currentPage: undefined as CurrentPageSummary | undefined,
+  searchStatuses: new Map<string, HTMLElement>(),
+  saveChatTimer: undefined as number | undefined,
+  sessionReady: false,
+  sessionStartedAt: 0,
+  suppressNextResponse: false,
+  timer: undefined as number | undefined,
+  turns: 0,
+  restoringChat: false,
+  debugEntries: [] as { time: string; message: string }[],
+};
+
+const orb = {
+  bars: new Float32Array(72),
+  context: elements.orbCanvas.getContext("2d"),
+  devicePixelRatio: Math.max(1, window.devicePixelRatio || 1)
+};
+
+function initializeSelects(): void {
+  for (const [voice, description] of VOICES) {
+    const option = document.createElement("option");
+    option.value = voice;
+    option.textContent = `${voice} — ${description}`;
+    elements.voiceSelect.append(option);
+  }
+
+  for (const language of LANGUAGES) {
+    const option = document.createElement("option");
+    option.value = language;
+    option.textContent = language;
+    elements.languageSelect.append(option);
+  }
+}
+
+function setActiveTab(tabName: "chat" | "history" | "settings"): void {
+  elements.chatPanel.classList.toggle("is-active", tabName === "chat");
+  elements.historyPanel.classList.toggle("is-active", tabName === "history");
+  elements.settingsPanel.classList.toggle("is-active", tabName === "settings");
+  elements.historyButton.classList.toggle(
+    "is-active",
+    tabName === "history"
+  );
+  elements.historyButton.setAttribute(
+    "aria-pressed",
+    String(tabName === "history")
+  );
+  elements.settingsButton.classList.toggle(
+    "is-active",
+    tabName === "settings"
+  );
+  elements.settingsButton.setAttribute(
+    "aria-pressed",
+    String(tabName === "settings")
+  );
+
+  if (tabName === "chat") {
+    scrollTranscriptToBottom("auto");
+  }
+}
+
+function setStatus(
+  label: string,
+  tone: "idle" | "live" | "busy" | "error" = "idle"
+): void {
+  elements.statusLabel.textContent = label;
+  elements.headerStatus.textContent = label;
+  elements.statusDot.dataset["tone"] = tone;
+  elements.headerStatus.dataset["tone"] = tone;
+}
+
+function pushDebugLog(message: string): void {
+  const time = new Date().toLocaleTimeString();
+  state.debugEntries.push({ time, message });
+
+  const entry = document.createElement("div");
+  entry.className = "debug-entry";
+  const timeSpan = document.createElement("span");
+  timeSpan.className = "debug-entry-time";
+  timeSpan.textContent = time;
+  const msgSpan = document.createElement("span");
+  msgSpan.className = "debug-entry-msg";
+  msgSpan.textContent = message;
+  entry.append(timeSpan, msgSpan);
+  elements.debugEntries.append(entry);
+  elements.debugEntries.scrollTop = elements.debugEntries.scrollHeight;
+
+  elements.debugBadge.textContent = String(state.debugEntries.length);
+  elements.debugBadge.classList.remove("hidden");
+}
+
+function showError(message: string): void {
+  elements.errorBox.textContent = message;
+  elements.errorBox.classList.remove("hidden");
+  pushDebugLog(message);
+}
+
+function clearError(): void {
+  elements.errorBox.textContent = "";
+  elements.errorBox.classList.add("hidden");
+}
+
+function updateApiStatus(configured: boolean): void {
+  state.apiConfigured = configured;
+  elements.apiRequiredCard.classList.toggle("hidden", configured);
+  elements.apiStatusDot.classList.toggle("is-configured", configured);
+  elements.apiStatusText.textContent = configured
+    ? "Configured securely"
+    : "Not configured";
+  elements.removeApiButton.classList.toggle("hidden", !configured);
+}
+
+function applyPreferences(preferences: Preferences): void {
+  state.preferences = preferences;
+  elements.voiceSelect.value = preferences.voice;
+  elements.languageSelect.value = preferences.preferredLanguage;
+  elements.behaviorSelect.value = preferences.behavior;
+  elements.autoInterruptInput.checked = preferences.autoInterrupt;
+}
+
+function updateSelection(selection: ContextSummary | undefined): void {
+  state.selection = selection;
+  elements.selectionBar.classList.toggle("hidden", !selection);
+  elements.selectionLabel.textContent = selection?.label ?? "";
+}
+
+function updateCurrentPage(currentPage: CurrentPageSummary | undefined): void {
+  const pageChanged = state.currentPage?.uri !== currentPage?.uri;
+  state.currentPage = currentPage;
+  elements.currentPageMention.disabled = !currentPage;
+  elements.currentPageMentionLabel.textContent =
+    currentPage?.relativePath ?? "No editor file is open";
+  if (pageChanged && state.attachedCurrentPage) {
+    state.attachedCurrentPage = false;
+  }
+  renderCurrentPageAttachment();
+  updateMentionMenu();
+}
+
+function renderCurrentPageAttachment(): void {
+  const visible = state.attachedCurrentPage && Boolean(state.currentPage);
+  elements.currentPageBar.classList.toggle("hidden", !visible);
+  elements.currentPageLabel.textContent = visible
+    ? (state.currentPage?.relativePath ?? "")
+    : "";
+}
+
+function updateAttachments(
+  attachments: readonly AttachmentSummary[] | undefined
+): void {
+  state.attachments = attachments ?? [];
+  const chips = state.attachments.map((attachment) => {
+    const chip = document.createElement("span");
+    chip.className = "attachment-chip";
+
+    const kind = document.createElement("span");
+    kind.className = "attachment-kind";
+    kind.textContent = attachment.kind === "image" ? "▧" : "</>";
+    kind.setAttribute("aria-hidden", "true");
+
+    const label = document.createElement("span");
+    label.className = "attachment-label";
+    label.textContent = attachment.label;
+    label.title = attachment.label;
+
+    const remove = document.createElement("button");
+    remove.className = "attachment-remove";
+    remove.type = "button";
+    remove.title = `Remove ${attachment.label}`;
+    remove.setAttribute("aria-label", remove.title);
+    remove.innerHTML =
+      '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4.3 3.4 3.7 3.7 3.7-3.7.9.9L8.9 8l3.7 3.7-.9.9L8 8.9l-3.7 3.7-.9-.9L7.1 8 3.4 4.3l.9-.9z"/></svg>';
+    remove.addEventListener("click", () => {
+      vscode.postMessage({
+        type: "removeAttachment",
+        value: attachment.id
+      });
+    });
+
+    chip.append(kind, label, remove);
+    return chip;
+  });
+
+  elements.attachmentList.replaceChildren(...chips);
+  elements.attachmentList.classList.toggle("hidden", chips.length === 0);
+}
+
+function setAttachmentMenu(open: boolean): void {
+  elements.attachmentMenu.classList.toggle("hidden", !open);
+  elements.attachmentButton.classList.toggle("is-active", open);
+  elements.attachmentButton.setAttribute("aria-expanded", String(open));
+}
+
+function updateChatHistory(chats: readonly ChatSummary[] | undefined): void {
+  state.chats = chats ?? [];
+  const rows = state.chats.map((chat) => {
+    const row = document.createElement("article");
+    row.className = "chat-history-row";
+    row.dataset["chatId"] = chat.id;
+
+    const copy = document.createElement("span");
+    copy.className = "chat-history-copy";
+    const title = document.createElement("strong");
+    title.textContent = chat.title;
+    title.title = chat.title;
+    const metadata = document.createElement("small");
+    const updated = new Date(chat.updatedAt);
+    metadata.textContent = `${chat.messageCount} messages · ${updated.toLocaleString()}`;
+    copy.append(title, metadata);
+
+    const actions = document.createElement("span");
+    actions.className = "chat-history-actions";
+    const reuse = document.createElement("button");
+    reuse.className = "code-action-button";
+    reuse.type = "button";
+    reuse.title = "Reuse chat";
+    reuse.setAttribute("aria-label", `Reuse ${chat.title}`);
+    reuse.innerHTML =
+      '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2a6 6 0 1 1-5.64 3.95l1.13.41A4.8 4.8 0 1 0 8 3.2c-1.3 0-2.48.51-3.34 1.35L6.2 6.1H2V1.9l1.8 1.8A5.98 5.98 0 0 1 8 2z"/></svg>';
+    reuse.addEventListener("click", () => {
+      vscode.postMessage({ type: "loadChat", chatId: chat.id });
+    });
+
+    const remove = document.createElement("button");
+    remove.className = "code-action-button danger-action";
+    remove.type = "button";
+    remove.title = "Delete chat";
+    remove.setAttribute("aria-label", `Delete ${chat.title}`);
+    remove.innerHTML =
+      '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 2V1h5v1H14v1.2h-1.1L12.2 14H3.8L3.1 3.2H2V2h3.5zm-1.2 1.2.62 9.6h6.16l.62-9.6H4.3zM6 5h1.2v6H6V5zm2.8 0H10v6H8.8V5z"/></svg>';
+    remove.addEventListener("click", () => {
+      vscode.postMessage({ type: "deleteChat", chatId: chat.id });
+    });
+
+    actions.append(reuse, remove);
+    row.append(copy, actions);
+    return row;
+  });
+
+  elements.chatHistoryList.replaceChildren(...rows);
+  elements.emptyHistory.classList.toggle("hidden", rows.length > 0);
+  if (!rows.length) {
+    elements.chatHistoryList.append(elements.emptyHistory);
+  }
+}
+
+function updateMentionMenu(): void {
+  const cursor = elements.textInput.selectionStart;
+  const prefix = elements.textInput.value.slice(0, cursor);
+  const match = /(^|\s)@([^\s@]*)$/u.exec(prefix);
+  const query = match?.[2]?.toLowerCase() ?? "";
+  const pageMatches = Boolean(
+    state.currentPage &&
+      match &&
+      ("current".startsWith(query) ||
+        state.currentPage.fileName.toLowerCase().includes(query))
+  );
+
+  if (!match || !pageMatches) {
+    state.mentionRange = undefined;
+    elements.mentionMenu.classList.add("hidden");
+    return;
+  }
+
+  const leadingWhitespaceLength = match[1]?.length ?? 0;
+  state.mentionRange = {
+    start: cursor - match[0].length + leadingWhitespaceLength,
+    end: cursor
+  };
+  elements.mentionMenu.classList.remove("hidden");
+}
+
+function attachCurrentPage(): void {
+  const currentPage = state.currentPage;
+  const mentionRange = state.mentionRange;
+  if (!currentPage || !mentionRange) {
+    return;
+  }
+
+  const value = elements.textInput.value;
+  const nextValue =
+    value.slice(0, mentionRange.start) + value.slice(mentionRange.end);
+  elements.textInput.value = nextValue;
+  elements.textInput.setSelectionRange(
+    mentionRange.start,
+    mentionRange.start
+  );
+  state.attachedCurrentPage = true;
+  state.mentionRange = undefined;
+  elements.mentionMenu.classList.add("hidden");
+  renderCurrentPageAttachment();
+  resizeComposer();
+  elements.textInput.focus();
+}
+
+function scrollTranscriptToBottom(
+  behavior: ScrollBehavior = "smooth"
+): void {
+  window.requestAnimationFrame(() => {
+    elements.transcript.scrollTo({
+      behavior,
+      top: elements.transcript.scrollHeight
+    });
+  });
+}
+
+function resizeComposer(): void {
+  elements.textInput.style.height = "auto";
+  elements.textInput.style.height = `${Math.min(
+    elements.textInput.scrollHeight,
+    120
+  )}px`;
+}
+
+function updateControls(): void {
+  elements.sessionButton.disabled = state.isConnecting;
+  elements.sessionButton.textContent = state.isConnecting
+    ? "Connecting…"
+    : state.sessionReady
+      ? "End live session"
+      : "Start live session";
+  elements.textInput.disabled = false;
+  elements.sendButton.disabled =
+    Boolean(state.pendingTextSubmission) ||
+    !elements.textInput.value.trim();
+
+  // Show mute/stop buttons only when the session is actively connected.
+  elements.muteMicButton.hidden = !state.sessionReady;
+  elements.stopPlaybackButton.hidden = !state.sessionReady;
+}
+
+function startTimer(): void {
+  stopTimer();
+  state.sessionStartedAt = Date.now();
+  elements.sessionTimer.classList.remove("hidden");
+  state.timer = window.setInterval(() => {
+    const seconds = Math.floor((Date.now() - state.sessionStartedAt) / 1000);
+    const minutesText = String(Math.floor(seconds / 60)).padStart(2, "0");
+    const secondsText = String(seconds % 60).padStart(2, "0");
+    elements.sessionTimer.textContent = `${minutesText}:${secondsText}`;
+  }, 1000);
+}
+
+function stopTimer(): void {
+  if (state.timer !== undefined) {
+    window.clearInterval(state.timer);
+  }
+  state.timer = undefined;
+  elements.sessionTimer.classList.add("hidden");
+  elements.sessionTimer.textContent = "00:00";
+}
+
+function createContextBadge(
+  label: string,
+  title: string,
+  marker = "</>"
+): HTMLElement {
+  const badge = document.createElement("div");
+  badge.className = "message-context";
+  badge.textContent = label;
+  badge.dataset["marker"] = marker;
+  badge.title = title;
+  return badge;
+}
+
+function createMessage(
+  role: ChatRole,
+  context?: ContextSummary,
+  currentPage?: CurrentPageSummary,
+  applyTargetId?: string,
+  storedMessage?: ChatMessage
+): TranscriptMessage {
+  const wrapper = document.createElement("article");
+  wrapper.className = `message ${role}`;
+
+  const body = document.createElement("div");
+  body.className = "message-body";
+  const contextLabel = storedMessage?.contextLabel ?? context?.label;
+  const currentPageLabel =
+    storedMessage?.currentPageLabel ?? currentPage?.relativePath;
+  if (contextLabel) {
+    body.append(
+      createContextBadge(contextLabel, "Selected editor context")
+    );
+  }
+  if (currentPageLabel) {
+    body.append(
+      createContextBadge(
+        currentPageLabel,
+        "Attached current file",
+        "@"
+      )
+    );
+  }
+
+  const content = document.createElement("div");
+  content.className = "message-content";
+  body.append(content);
+  wrapper.append(body);
+  elements.transcript.append(wrapper);
+
+  state.turns += 1;
+  elements.emptyState.classList.add("hidden");
+  elements.chatPanel.classList.add("has-transcript");
+  scrollTranscriptToBottom();
+
+  const message: TranscriptMessage = {
+    id: storedMessage?.id ?? crypto.randomUUID(),
+    role,
+    wrapper,
+    content,
+    spokenText: storedMessage?.text ?? "",
+    visualText: storedMessage?.visualText ?? "",
+    markdownBlocks: [...(storedMessage?.markdownBlocks ?? [])],
+    closed: false,
+    renderVersion: 0,
+    renderBusy: false,
+    renderQueued: false,
+    applyTargetId,
+    contextLabel,
+    currentPageLabel
+  };
+  state.chatMessages.push({
+    id: message.id,
+    role,
+    text: message.spokenText,
+    visualText: message.visualText,
+    markdownBlocks: [...message.markdownBlocks],
+    createdAt: storedMessage?.createdAt ?? new Date().toISOString(),
+    contextLabel,
+    currentPageLabel
+  });
+  return message;
+}
+
+function appendTranscript(
+  role: ChatRole,
+  text: string,
+  context?: ContextSummary,
+  currentPage?: CurrentPageSummary
+): void {
+  // User messages still use the simple concatenation approach.
+  if (role === "user") {
+    if (!text) {
+      return;
+    }
+
+    let message = state.currentUserMessage;
+
+    if (!message || message.closed) {
+      message = createMessage(role, context, currentPage);
+      state.currentUserMessage = message;
+    }
+
+    message.spokenText += text;
+    const storedIndex = state.chatMessages.findIndex(
+      (candidate) => candidate.id === message.id
+    );
+    if (storedIndex >= 0) {
+      const existing = state.chatMessages[storedIndex];
+      if (existing) {
+        state.chatMessages[storedIndex] = {
+          ...existing,
+          text: message.spokenText
+        };
+      }
+    }
+    message.content.textContent = message.spokenText;
+    scheduleChatSave();
+    scrollTranscriptToBottom("auto");
+  }
+}
+
+function mergeStreamingText(
+  currentText: string,
+  incomingText: string
+): string {
+  const current = currentText;
+  const incoming = incomingText;
+
+  if (!incoming) {
+    return current;
+  }
+
+  if (!current) {
+    return incoming;
+  }
+
+  // The incoming value is a cumulative transcript containing everything
+  // already received.
+  if (incoming.startsWith(current)) {
+    return incoming;
+  }
+
+  // The same chunk was delivered again.
+  if (current.endsWith(incoming)) {
+    return current;
+  }
+
+  const maximumOverlap = Math.min(current.length, incoming.length);
+
+  for (let overlap = maximumOverlap; overlap > 0; overlap -= 1) {
+    if (
+      current.slice(current.length - overlap) ===
+      incoming.slice(0, overlap)
+    ) {
+      return current + incoming.slice(overlap);
+    }
+  }
+
+  const currentLastCharacter = current.at(-1) ?? "";
+  const incomingFirstCharacter = incoming.at(0) ?? "";
+
+  const requiresSpace =
+    /[\p{L}\p{N},.;:!?)]/u.test(currentLastCharacter) &&
+    /[\p{L}\p{N}(]/u.test(incomingFirstCharacter);
+
+  return `${current}${requiresSpace ? " " : ""}${incoming}`;
+}
+
+function mergeStreamingContent(
+  currentText: string,
+  incomingText: string
+): string {
+  if (!incomingText) {
+    return currentText;
+  }
+
+  if (!currentText) {
+    return incomingText;
+  }
+
+  if (incomingText.startsWith(currentText)) {
+    return incomingText;
+  }
+
+  if (currentText.endsWith(incomingText)) {
+    return currentText;
+  }
+
+  const maximumOverlap = Math.min(
+    currentText.length,
+    incomingText.length
+  );
+
+  for (let overlap = maximumOverlap; overlap > 0; overlap -= 1) {
+    if (
+      currentText.slice(currentText.length - overlap) ===
+      incomingText.slice(0, overlap)
+    ) {
+      return currentText + incomingText.slice(overlap);
+    }
+  }
+
+  // Model text is a byte-for-byte content stream. Never inject spaces here,
+  // because a chunk can split an identifier, code token, or Markdown fence.
+  return currentText + incomingText;
+}
+
+function appendSpokenTranscript(text: string): void {
+  if (!text) {
+    return;
+  }
+
+  let message = state.currentModelMessage;
+
+  if (!message || message.closed) {
+    message = createMessage(
+      "model",
+      undefined,
+      undefined,
+      state.pendingModelApplyTargetId
+    );
+    state.currentModelMessage = message;
+    state.pendingModelApplyTargetId = undefined;
+  }
+
+  message.spokenText = mergeStreamingText(
+    message.spokenText,
+    text
+  );
+
+  // Update the stored chat message text.
+  const storedIndex = state.chatMessages.findIndex(
+    (candidate) => candidate.id === message.id
+  );
+  if (storedIndex >= 0) {
+    const existing = state.chatMessages[storedIndex];
+    if (existing) {
+      state.chatMessages[storedIndex] = {
+        ...existing,
+        text: message.spokenText
+      };
+    }
+  }
+
+  void renderModelMessage(message);
+  scheduleChatSave();
+  scrollTranscriptToBottom("auto");
+}
+
+function appendVisualText(text: string): void {
+  if (!text) {
+    return;
+  }
+
+  let message = state.currentModelMessage;
+
+  if (!message || message.closed) {
+    message = createMessage(
+      "model",
+      undefined,
+      undefined,
+      state.pendingModelApplyTargetId
+    );
+    state.currentModelMessage = message;
+    state.pendingModelApplyTargetId = undefined;
+  }
+
+  message.visualText = mergeStreamingContent(
+    message.visualText,
+    text
+  );
+
+  const storedIndex = state.chatMessages.findIndex(
+    (candidate) => candidate.id === message.id
+  );
+  if (storedIndex >= 0) {
+    const existing = state.chatMessages[storedIndex];
+    if (existing) {
+      state.chatMessages[storedIndex] = {
+        ...existing,
+        visualText: message.visualText
+      };
+    }
+  }
+
+  void renderModelMessage(message);
+  scheduleChatSave();
+  scrollTranscriptToBottom("auto");
+}
+
+function appendMarkdownBlock(markdown: string): void {
+  const normalizedMarkdown = markdown.trim();
+
+  if (!normalizedMarkdown) {
+    return;
+  }
+
+  let message = state.currentModelMessage;
+
+  if (!message || message.closed) {
+    message = createMessage(
+      "model",
+      undefined,
+      undefined,
+      state.pendingModelApplyTargetId
+    );
+    state.currentModelMessage = message;
+    state.pendingModelApplyTargetId = undefined;
+  }
+
+  const alreadyExists = message.markdownBlocks.some(
+    (block) => block.markdown === normalizedMarkdown
+  );
+
+  if (alreadyExists) {
+    return;
+  }
+
+  message.markdownBlocks.push({
+    id: crypto.randomUUID(),
+    markdown: normalizedMarkdown
+  });
+
+  const storedIndex = state.chatMessages.findIndex(
+    (candidate) => candidate.id === message.id
+  );
+  if (storedIndex >= 0) {
+    const existing = state.chatMessages[storedIndex];
+    if (existing) {
+      state.chatMessages[storedIndex] = {
+        ...existing,
+        markdownBlocks: [...message.markdownBlocks]
+      };
+    }
+  }
+
+  void renderModelMessage(message);
+  scheduleChatSave();
+  scrollTranscriptToBottom("auto");
+}
+
+function fixHeadingFormatting(text: string): string {
+  // Ensure a space after hash symbols for headings.
+  // Converts ###text, ##text, #text to ### text, ## text, # text (and all other levels).
+  return text.replace(/^(#{1,6})([^\s#])/gm, "$1 $2");
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function renderInlineMarkdown(text: string): string {
+  // Escape HTML entities first, then apply safe Markdown formatting.
+  let html = escapeHtml(text);
+
+  // Inline code: `code`
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+
+  // Bold: **text**
+  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+
+  return html;
+}
+
+function renderMarkdownBlock(container: HTMLElement, text: string): void {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return;
+  }
+
+  const fixed = fixHeadingFormatting(trimmed);
+  const lines = fixed.split("\n");
+
+  let inList = false;
+  let listType: "ul" | "ol" | null = null;
+  let listEl: HTMLElement | null = null;
+
+  function closeList(): void {
+    inList = false;
+    listType = null;
+    listEl = null;
+  }
+
+  for (let idx = 0; idx < lines.length; idx++) {
+    const line = lines[idx] as string;
+    const trimmedLine = line.trim();
+
+    // Empty line — close any open list.
+    if (!trimmedLine) {
+      if (inList) closeList();
+      continue;
+    }
+
+    // Heading
+    const headingMatch = trimmedLine.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch) {
+      if (inList) closeList();
+      const level = headingMatch[1]!.length;
+      const h = document.createElement("h" + level);
+      h.innerHTML = renderInlineMarkdown(headingMatch[2]!.trim());
+      container.append(h);
+      continue;
+    }
+
+    // Unordered list
+    const ulMatch = trimmedLine.match(/^[-*]\s+(.+)$/);
+    if (ulMatch) {
+      if (!inList || listType !== "ul") {
+        closeList();
+        inList = true;
+        listType = "ul";
+        listEl = document.createElement("ul");
+        container.append(listEl);
+      }
+      const li = document.createElement("li");
+      li.innerHTML = renderInlineMarkdown(ulMatch[1]!.trim());
+      listEl!.append(li);
+      continue;
+    }
+
+    // Ordered list
+    const olMatch = trimmedLine.match(/^\d+\.\s+(.+)$/);
+    if (olMatch) {
+      if (!inList || listType !== "ol") {
+        closeList();
+        inList = true;
+        listType = "ol";
+        listEl = document.createElement("ol");
+        container.append(listEl);
+      }
+      const li = document.createElement("li");
+      li.innerHTML = renderInlineMarkdown(olMatch[1]!.trim());
+      listEl!.append(li);
+      continue;
+    }
+
+    // Non-list / non-heading line — close any open list and emit a paragraph.
+    if (inList) closeList();
+    const p = document.createElement("p");
+    p.innerHTML = renderInlineMarkdown(trimmedLine);
+    container.append(p);
+  }
+}
+
+function appendTextSegment(container: HTMLElement, text: string): void {
+  if (!text) {
+    return;
+  }
+
+  appendMixedContent(container, text);
+}
+
+function appendMixedContent(container: HTMLElement, text: string): void {
+  // Split by newline. Every line — including the final one — stays in the array
+  // and is processed.  There is no "trailing incomplete line" pop because:
+  //   (a) A valid complete table row must not be silently dropped just because
+  //       it happens to be the last line without a trailing '\n'.
+  //   (b) Genuinely incomplete lines (e.g. "| Cell 1 | Cel") won't match the
+  //       table-row criteria (they need at least two pipes and a leading "|"),
+  //       so they fall through to the plain-text buffer automatically.
+  //   (c) In streaming scenarios the entire message is re-rendered from scratch
+  //       on every chunk, so any intermediate mis-classification is corrected
+  //       immediately.
+  const lines = text.split("\n");
+
+  const result = document.createDocumentFragment();
+  const textBuffer: string[] = [];
+  let i = 0;
+
+  function flushTextBuffer(): void {
+    if (textBuffer.length === 0) return;
+    const raw = sanitizeSourceLocationText(textBuffer.join("\n"));
+    const wrapper = document.createElement("div");
+    wrapper.className = "rendered-text";
+    renderMarkdownBlock(wrapper, raw);
+    if (wrapper.childNodes.length > 0) {
+      result.append(wrapper);
+    }
+    textBuffer.length = 0;
+  }
+
+  while (i < lines.length) {
+    // Look for potential start of table block: a pipe row followed by a
+    // valid separator row.
+    const line = lines[i];
+    if (line === undefined) {
+      i++;
+      continue;
+    }
+    const trimmed = line.trim();
+    const pipeCount = (trimmed.match(/\|/g) ?? []).length;
+    if (
+      pipeCount >= 2 &&
+      trimmed.startsWith("|") &&
+      i + 1 < lines.length
+    ) {
+      const nextLine = lines[i + 1];
+      if (nextLine === undefined) {
+        break;
+      }
+      const nextTrimmed = nextLine.trim();
+      if (!isTableSeparatorRow(nextTrimmed)) {
+        textBuffer.push(line);
+        i++;
+        continue;
+      }
+
+      // Found a table — flush preceding prose.
+      flushTextBuffer();
+
+      const tableLines: string[] = [];
+      tableLines.push(trimmed);       // header row
+      tableLines.push(nextTrimmed);   // separator row
+      i += 2;
+
+      // Collect every valid table row until the first non-table line.
+      // A valid table row must start with "|" and contain at least two pipes.
+      // Rows may have any number of columns — we do *not* compare cell count
+      // against the header to detect trailing prose.  However, if a row does
+      // NOT end with a closing pipe (after trimming), the text after the last
+      // pipe is considered trailing prose — it is split off so it won't be
+      // rendered as a cell.
+      while (i < lines.length) {
+        const row = lines[i];
+        if (row === undefined) {
+          break;
+        }
+        const rowTrimmed = row.trim();
+        const rowPipeCount = (rowTrimmed.match(/\|/g) ?? []).length;
+        if (rowPipeCount >= 2 && rowTrimmed.startsWith("|")) {
+          // If the row does not end with a closing pipe, the content after
+          // the last pipe is trailing prose, not a cell value.
+          if (!rowTrimmed.endsWith("|")) {
+            const lastPipeIdx = rowTrimmed.lastIndexOf("|");
+            const afterLastPipe = rowTrimmed.slice(lastPipeIdx + 1).trim();
+            if (afterLastPipe.length > 0) {
+              // Include everything up to and including the last pipe as the
+              // table row, and flush the rest as prose after the table.
+              tableLines.push(rowTrimmed.slice(0, lastPipeIdx + 1));
+              textBuffer.push(afterLastPipe);
+              i++;
+              break;
+            }
+            // Fall through: no content after last pipe, accept the line as-is.
+          }
+          // Accept any well-formed pipe row regardless of column count.
+          tableLines.push(rowTrimmed);
+          i++;
+        } else {
+          break;
+        }
+      }
+
+      renderTable(result, tableLines);
+      continue;
+    }
+    // Not a table start — buffer as plain text.
+    textBuffer.push(line);
+    i++;
+  }
+
+  flushTextBuffer();
+  if (result.childNodes.length > 0) {
+    container.append(result);
+  }
+}
+
+function renderTable(
+  container: HTMLElement | DocumentFragment,
+  tableLines: string[]
+): void {
+  let separatorIndex = -1;
+  for (let i = 0; i < tableLines.length; i++) {
+    const line = tableLines[i];
+    if (line !== undefined && isTableSeparatorRow(line)) {
+      separatorIndex = i;
+      break;
+    }
+  }
+
+  let headerRow: string[] | null = null;
+  const dataRows: string[][] = [];
+
+  if (separatorIndex >= 0) {
+    if (separatorIndex > 0) {
+      const firstLine = tableLines[0];
+      if (firstLine !== undefined) {
+        headerRow = parsePipedRow(firstLine);
+      }
+    }
+    for (let i = separatorIndex + 1; i < tableLines.length; i++) {
+      const line = tableLines[i];
+      if (line !== undefined) {
+        dataRows.push(parsePipedRow(line));
+      }
+    }
+  } else if (tableLines.length >= 2) {
+    const firstLine = tableLines[0];
+    if (firstLine !== undefined) {
+      headerRow = parsePipedRow(firstLine);
+    }
+    for (let i = 1; i < tableLines.length; i++) {
+      const line = tableLines[i];
+      if (line !== undefined) {
+        dataRows.push(parsePipedRow(line));
+      }
+    }
+  }
+
+  const scrollWrapper = document.createElement("div");
+  scrollWrapper.className = "response-table-scroll";
+
+  const table = document.createElement("table");
+  table.className = "response-table";
+
+  if (headerRow) {
+    const thead = document.createElement("thead");
+    const tr = document.createElement("tr");
+    for (const cell of headerRow) {
+      const th = document.createElement("th");
+      th.innerHTML = renderInlineMarkdown(cell);
+      tr.append(th);
+    }
+    thead.append(tr);
+    table.append(thead);
+  }
+
+  if (dataRows.length > 0) {
+    const tbody = document.createElement("tbody");
+    for (const row of dataRows) {
+      const tr = document.createElement("tr");
+      for (const cell of row) {
+        const td = document.createElement("td");
+        td.innerHTML = renderInlineMarkdown(cell);
+        tr.append(td);
+      }
+      tbody.append(tr);
+    }
+    table.append(tbody);
+  }
+
+  scrollWrapper.append(table);
+  container.append(scrollWrapper);
+}
+
+function isTableSeparatorRow(line: string): boolean {
+  const stripped = line.replace(/\|/gu, "").replace(/\s/gu, "");
+  return stripped.length > 2 && /^[-:]+$/u.test(stripped);
+}
+
+function parsePipedRow(line: string): string[] {
+  let trimmed = line.trim();
+  if (trimmed.startsWith("|")) {
+    trimmed = trimmed.slice(1);
+  }
+  if (trimmed.endsWith("|")) {
+    trimmed = trimmed.slice(0, -1);
+  }
+
+  // Protect pipes that appear inside backtick-delimited code spans so they
+  // are not treated as cell separators.  Replace each `|` between backticks
+  // with a placeholder, split on the remaining (real) separators, then
+  // restore the placeholders.
+  const protectedLine = trimmed.replace(/`[^`]*`/g, (match) =>
+    match.replace(/\|/g, "\x00"),
+  );
+
+  const cells = protectedLine.split("|").map((cell) => cell.trim());
+
+  // Restore placeholder sequences back to actual pipes.
+  for (let idx = 0; idx < cells.length; idx++) {
+    const cell = cells[idx];
+    if (cell !== undefined && cell.includes("\x00")) {
+      cells[idx] = cell.replace(/\x00/g, "|");
+    }
+  }
+
+  return cells;
+}
+
+function sanitizeSourceLocationText(text: string): string {
+  return text
+    .replace(
+      /\b(Looking at lines? \d+(?:\s*[-–]\s*\d+)?)\s+(?:of|in)\s+`[^`]+`/giu,
+      "$1"
+    )
+    .replace(
+      /\b(Looking at lines? \d+(?:\s*[-–]\s*\d+)?)\s+(?:of|in)\s+(?:the\s+file\s+)?(?:[A-Za-z]:)?[^\s,.;]*[\\/][^\s,.;]+/giu,
+      "$1"
+    )
+    .replace(
+      /\b(?:In|Within)\s+`[^`]+`,?\s+(looking at lines? \d+(?:\s*[-–]\s*\d+)?)/giu,
+      (_, location: string) =>
+        `${location.charAt(0).toUpperCase()}${location.slice(1)}`
+    );
+}
+
+function normalizedLanguage(language: string): string {
+  const aliases: Readonly<Record<string, string>> = {
+    csharp: "csharp",
+    cs: "csharp",
+    html: "html",
+    js: "javascript",
+    jsx: "jsx",
+    md: "markdown",
+    py: "python",
+    sh: "bash",
+    shell: "bash",
+    shellscript: "bash",
+    ts: "typescript",
+    tsx: "tsx",
+    yml: "yaml"
+  };
+  return aliases[language.toLowerCase()] ?? language.toLowerCase();
+}
+
+async function appendCodeBlock(
+  container: HTMLElement,
+  languageLabel: string,
+  codeText: string,
+  applyTargetId: string | undefined
+): Promise<void> {
+  const block = document.createElement("section");
+  block.className = "code-block";
+
+  const header = document.createElement("div");
+  header.className = "code-header";
+  const language = document.createElement("span");
+  language.textContent = languageLabel || "code";
+  const actions = document.createElement("span");
+  actions.className = "code-actions";
+  actions.append(createCodeActionButton("copy", codeText));
+  actions.append(
+    createCodeActionButton("apply", codeText, applyTargetId)
+  );
+  header.append(language, actions);
+
+  try {
+    const highlighter = await highlighterPromise;
+    const requestedLanguage = normalizedLanguage(languageLabel);
+    const language = highlighter
+      .getLoadedLanguages()
+      .includes(requestedLanguage)
+      ? requestedLanguage
+      : "text";
+    const highlightedHtml = highlighter.codeToHtml(codeText, {
+      lang: language,
+      themes: {
+        light: "light-plus",
+        dark: "dark-plus"
+      },
+      defaultColor: false
+    });
+    const template = document.createElement("template");
+    template.innerHTML = highlightedHtml;
+    const pre = template.content.querySelector("pre");
+    if (pre) {
+      pre.classList.add("echo-shiki");
+      block.append(header, pre);
+      container.append(block);
+      return;
+    }
+  } catch {
+    // Fall back to an escaped plain-text code block if highlighting fails.
+  }
+
+  const pre = document.createElement("pre");
+  const code = document.createElement("code");
+  code.textContent = codeText;
+  pre.append(code);
+  block.append(header, pre);
+  container.append(block);
+}
+
+function createCodeActionButton(
+  action: "copy" | "apply",
+  codeText: string,
+  targetId?: string
+): HTMLButtonElement {
+  const button = document.createElement("button");
+  const actionId = crypto.randomUUID();
+  button.className = "code-action-button";
+  button.type = "button";
+  button.dataset["action"] = action;
+  button.dataset["available"] = String(
+    true
+  );
+  button.dataset["actionId"] = actionId;
+  button.title =
+    action === "copy"
+      ? "Copy code"
+      : "Apply to the selected editor area";
+  button.setAttribute("aria-label", button.title);
+  button.innerHTML =
+    action === "copy"
+      ? '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 1.5h7.5A1.5 1.5 0 0 1 14 3v7.5a1.5 1.5 0 0 1-1.5 1.5H12V5.5A1.5 1.5 0 0 0 10.5 4H4v-1A1.5 1.5 0 0 1 5 1.5zM3.5 5h7A1.5 1.5 0 0 1 12 6.5v7A1.5 1.5 0 0 1 10.5 15h-7A1.5 1.5 0 0 1 2 13.5v-7A1.5 1.5 0 0 1 3.5 5zm0 1.25a.25.25 0 0 0-.25.25v7c0 .14.11.25.25.25h7c.14 0 .25-.11.25-.25v-7a.25.25 0 0 0-.25-.25h-7z"/></svg>'
+      : '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h4v1.2H3.2v9.6H6V14H2V2zm12 0h-4v1.2h2.8v9.6H10V14h4V2zM7.4 4h1.2v4.1l1.5-1.5.85.85L8 10.4 5.05 7.45l.85-.85 1.5 1.5V4z"/></svg>';
+  button.addEventListener("click", () => {
+    button.disabled = true;
+    vscode.postMessage({
+      type: action === "copy" ? "copyCode" : "applyPatch",
+      actionId,
+      code: codeText,
+      targetId
+    });
+  });
+  return button;
+}
+
+async function appendMixedRichContent(
+  container: HTMLElement,
+  source: string,
+  applyTargetId: string | undefined
+): Promise<void> {
+  const fencePattern =
+    /```([A-Za-z0-9_+#.-]*)[^\S\r\n]*\r?\n([\s\S]*?)(?:```|$)/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = fencePattern.exec(source)) !== null) {
+    appendTextSegment(container, source.slice(cursor, match.index));
+    await appendCodeBlock(
+      container,
+      match[1] ?? "",
+      match[2] ?? "",
+      applyTargetId
+    );
+    cursor = match.index + match[0].length;
+  }
+
+  appendTextSegment(container, source.slice(cursor));
+}
+
+async function renderModelMessage(
+  message: TranscriptMessage
+): Promise<void> {
+  // Rendering state belongs to this message. A global render lock can cause
+  // a new message to be skipped while an older Shiki render is still pending.
+  if (message.renderBusy) {
+    message.renderQueued = true;
+    return;
+  }
+
+  message.renderBusy = true;
+  message.renderQueued = false;
+
+  try {
+    const renderVersion = message.renderVersion + 1;
+    message.renderVersion = renderVersion;
+
+    const rendered = document.createDocumentFragment();
+
+    // Audio transcription is the spoken equivalent of the model response.
+    // It can contain fenced code blocks when the model generates code, so we
+    // parse it through appendMixedRichContent which handles code fences.
+    if (message.spokenText.trim()) {
+      const spokenContainer = document.createElement("div");
+      spokenContainer.className = "spoken-transcript";
+      await appendMixedRichContent(
+        spokenContainer,
+        message.spokenText.trim(),
+        undefined
+      );
+      rendered.append(spokenContainer);
+    }
+
+    // Model text is the visual stream. It contains Markdown tables and fenced
+    // code and must remain separate from outputTranscription.
+    if (message.visualText.trim()) {
+      const visualContainer = document.createElement("div");
+      visualContainer.className = "message-rich-content";
+      await appendMixedRichContent(
+        visualContainer,
+        message.visualText,
+        message.applyTargetId
+      );
+      rendered.append(visualContainer);
+    }
+
+    // Render each Markdown block as rich content (coming from render_markdown).
+    for (const block of message.markdownBlocks) {
+      const richContent = document.createElement("div");
+      richContent.className = "message-rich-content";
+      richContent.dataset["blockId"] = block.id;
+
+      await appendMixedRichContent(
+        richContent,
+        block.markdown,
+        message.applyTargetId
+      );
+
+      rendered.append(richContent);
+    }
+
+    if (message.renderVersion !== renderVersion) {
+      return;
+    }
+
+    message.content.replaceChildren(rendered);
+    scrollTranscriptToBottom("auto");
+  } finally {
+    message.renderBusy = false;
+    if (message.renderQueued) {
+      message.renderQueued = false;
+      void renderModelMessage(message);
+    }
+  }
+}
+
+function finishTranscriptTurn(): void {
+  if (state.currentUserMessage) {
+    state.currentUserMessage.closed = true;
+  }
+  if (state.currentModelMessage) {
+    state.currentModelMessage.closed = true;
+    void renderModelMessage(state.currentModelMessage);
+  }
+  scheduleChatSave();
+  scrollTranscriptToBottom();
+}
+
+function resetTranscriptView(): void {
+  elements.transcript
+    .querySelectorAll<HTMLElement>(".message, .workspace-search-status")
+    .forEach((message) => {
+      message.remove();
+    });
+  state.currentModelMessage = undefined;
+  state.currentUserMessage = undefined;
+  state.pendingVoiceContext = undefined;
+  state.pendingModelApplyTargetId = undefined;
+  state.searchStatuses.clear();
+  state.chatMessages = [];
+  state.turns = 0;
+  state.suppressNextResponse = false;
+  elements.emptyState.classList.remove("hidden");
+  elements.chatPanel.classList.remove("has-transcript");
+  scrollTranscriptToBottom("auto");
+}
+
+function deriveChatTitle(text: string): string {
+  const compact = text.replace(/\s+/gu, " ").trim();
+  return compact.length > 56 ? `${compact.slice(0, 53)}…` : compact;
+}
+
+function ensureActiveChat(firstMessage: string): string {
+  if (state.activeChatId) {
+    return state.activeChatId;
+  }
+
+  const now = new Date().toISOString();
+  state.activeChatId = crypto.randomUUID();
+  state.activeChatCreatedAt = now;
+  state.activeChatTitle = deriveChatTitle(firstMessage) || "New chat";
+  return state.activeChatId;
+}
+
+function scheduleChatSave(): void {
+  if (
+    state.restoringChat ||
+    !state.activeChatId ||
+    !state.activeChatCreatedAt ||
+    !state.activeChatTitle ||
+    !state.chatMessages.length
+  ) {
+    return;
+  }
+
+  if (state.saveChatTimer !== undefined) {
+    window.clearTimeout(state.saveChatTimer);
+  }
+  state.saveChatTimer = window.setTimeout(() => {
+    state.saveChatTimer = undefined;
+    postActiveChat();
+  }, 350);
+}
+
+function postActiveChat(): void {
+  if (
+    !state.activeChatId ||
+    !state.activeChatCreatedAt ||
+    !state.activeChatTitle ||
+    !state.chatMessages.length
+  ) {
+    return;
+  }
+
+  vscode.postMessage({
+    type: "saveChat",
+    chat: {
+      id: state.activeChatId,
+      title: state.activeChatTitle,
+      createdAt: state.activeChatCreatedAt,
+      updatedAt: new Date().toISOString(),
+      messages: state.chatMessages
+    } satisfies StoredChat
+  });
+}
+
+function startNewChat(): void {
+  if (state.saveChatTimer !== undefined) {
+    window.clearTimeout(state.saveChatTimer);
+    state.saveChatTimer = undefined;
+  }
+  postActiveChat();
+  resetTranscriptView();
+  state.activeChatId = undefined;
+  state.activeChatCreatedAt = undefined;
+  state.activeChatTitle = undefined;
+  state.pendingTextSubmission = undefined;
+  updateControls();
+  setActiveTab("chat");
+  elements.textInput.focus();
+}
+
+function restoreChat(chat: StoredChat): void {
+  state.restoringChat = true;
+  resetTranscriptView();
+  state.activeChatId = chat.id;
+  state.activeChatCreatedAt = chat.createdAt;
+  state.activeChatTitle = chat.title;
+
+  for (const storedMessage of chat.messages) {
+    const message = createMessage(
+      storedMessage.role,
+      undefined,
+      undefined,
+      undefined,
+      storedMessage
+    );
+    message.closed = true;
+    if (storedMessage.role === "model") {
+      void renderModelMessage(message);
+    } else {
+      message.content.textContent = storedMessage.text;
+    }
+  }
+  state.currentModelMessage = undefined;
+  state.currentUserMessage = undefined;
+  state.restoringChat = false;
+  setActiveTab("chat");
+  scrollTranscriptToBottom("auto");
+  elements.textInput.focus();
+}
+
+function showWorkspaceSearch(
+  requestId: string | undefined,
+  message: string
+): void {
+  const id = requestId ?? crypto.randomUUID();
+  let status = state.searchStatuses.get(id);
+  if (!status) {
+    status = document.createElement("div");
+    status.className = "workspace-search-status";
+    status.setAttribute("role", "status");
+    elements.transcript.append(status);
+    state.searchStatuses.set(id, status);
+  }
+  status.dataset["state"] = "searching";
+  status.textContent = message;
+  elements.emptyState.classList.add("hidden");
+  elements.chatPanel.classList.add("has-transcript");
+  scrollTranscriptToBottom();
+}
+
+function completeWorkspaceSearch(
+  requestId: string | undefined,
+  message: string,
+  files: readonly string[] = []
+): void {
+  const status = requestId
+    ? state.searchStatuses.get(requestId)
+    : undefined;
+  if (!status) {
+    showWorkspaceSearch(requestId, message);
+    return;
+  }
+  status.dataset["state"] = "complete";
+  const label = document.createElement("span");
+  label.textContent = message;
+  const fileList = document.createElement("span");
+  fileList.className = "workspace-file-list";
+  for (const file of files) {
+    const fileName = file.split(/[\\/]/u).pop() ?? file;
+    const item = document.createElement("code");
+    item.textContent = fileName;
+    fileList.append(item);
+  }
+  status.replaceChildren(label);
+  if (files.length) {
+    status.append(fileList);
+  }
+  scrollTranscriptToBottom();
+}
+
+function base64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function hasQueuedPlayback(): boolean {
+  return Boolean(
+    state.playbackSources.size > 0 &&
+      state.audioContext &&
+      state.nextPlaybackTime > state.audioContext.currentTime + 0.04
+  );
+}
+
+function stopPlayback(): void {
+  state.playbackSources.forEach((source) => {
+    try {
+      source.stop();
+      source.disconnect();
+    } catch {
+      // The source may already have ended.
+    }
+  });
+  state.playbackSources.clear();
+  state.nextPlaybackTime = 0;
+}
+
+function queueOutputAudio(base64: string): void {
+  const audioContext = state.audioContext;
+  if (!audioContext || audioContext.state === "closed") {
+    return;
+  }
+
+  const bytes = base64ToBytes(base64);
+  const sampleCount = Math.floor(bytes.byteLength / 2);
+  if (!sampleCount) {
+    return;
+  }
+
+  const pcm = new Int16Array(bytes.buffer, bytes.byteOffset, sampleCount);
+  const audioBuffer = audioContext.createBuffer(
+    1,
+    sampleCount,
+    OUTPUT_SAMPLE_RATE
+  );
+  const channel = audioBuffer.getChannelData(0);
+  for (let index = 0; index < sampleCount; index += 1) {
+    channel[index] = (pcm[index] ?? 0) / 32_768;
+  }
+
+  const source = audioContext.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(state.masterGain ?? audioContext.destination);
+
+  const startAt = Math.max(
+    state.nextPlaybackTime,
+    audioContext.currentTime + 0.02
+  );
+  source.start(startAt);
+  state.nextPlaybackTime = startAt + audioBuffer.duration;
+  state.playbackSources.add(source);
+  setStatus("Gemini is speaking", "busy");
+
+  source.onended = () => {
+    state.playbackSources.delete(source);
+    source.disconnect();
+    if (!state.playbackSources.size && state.sessionReady) {
+      setStatus("Listening", "live");
+    }
+  };
+}
+
+function createPlaybackPipeline(): void {
+  const audioContext = state.audioContext;
+  if (!audioContext) {
+    return;
+  }
+
+  state.masterGain = audioContext.createGain();
+  state.masterGain.connect(audioContext.destination);
+  state.analyser = audioContext.createAnalyser();
+  state.analyser.fftSize = 256;
+  state.analyserData = new Uint8Array(state.analyser.fftSize);
+  state.masterGain.connect(state.analyser);
+}
+
+function cleanupAudio(): void {
+  stopPlayback();
+  state.micLevel = 0;
+  elements.micMeter.style.width = "0%";
+
+  state.masterGain?.disconnect();
+  if (state.audioContext?.state !== "closed") {
+    void state.audioContext?.close();
+  }
+
+  state.analyser = undefined;
+  state.analyserData = undefined;
+  state.audioContext = undefined;
+  state.masterGain = undefined;
+}
+
+async function beginSession(): Promise<void> {
+  if (state.sessionReady || state.isConnecting) {
+    return;
+  }
+  if (!state.apiConfigured) {
+    setActiveTab("settings");
+    elements.apiKeyInput.focus();
+    return;
+  }
+  clearError();
+  state.isConnecting = true;
+  updateControls();
+  setStatus("Requesting microphone", "busy");
+
+  try {
+    state.audioContext = new AudioContext();
+    await state.audioContext.resume();
+    createPlaybackPipeline();
+    vscode.postMessage({ type: "startSession" });
+  } catch (error) {
+    state.isConnecting = false;
+    cleanupAudio();
+    updateControls();
+    setStatus("Could not start", "error");
+    showError(
+      error instanceof Error
+        ? error.message
+        : "Could not start the live session."
+    );
+  }
+}
+
+function dispatchTextSubmission(
+  submission: PendingTextSubmission
+): void {
+  vscode.postMessage({
+    type: "sendText",
+    requestId: submission.requestId,
+    chatId: submission.chatId,
+    value: submission.text,
+    includeCurrentPage: submission.includeCurrentPage,
+    currentPageUri: submission.currentPageUri,
+    attachmentIds: submission.attachmentIds
+  });
+  state.pendingTextSubmission = undefined;
+  updateControls();
+}
+
+function submitTextMessage(): void {
+  const text = elements.textInput.value.trim();
+  if (!text || state.pendingTextSubmission) {
+    return;
+  }
+  if (!state.apiConfigured) {
+    setActiveTab("settings");
+    elements.apiKeyInput.focus();
+    return;
+  }
+
+  const submission: PendingTextSubmission = {
+    requestId: crypto.randomUUID(),
+    text,
+    chatId: ensureActiveChat(text),
+    includeCurrentPage:
+      state.attachedCurrentPage && Boolean(state.currentPage),
+    currentPageUri: state.attachedCurrentPage
+      ? state.currentPage?.uri
+      : undefined,
+    attachmentIds: state.attachments.map((attachment) => attachment.id)
+  };
+
+  // User submitted a text query — clear any suppression from a prior stop.
+  state.suppressNextResponse = false;
+
+  clearError();
+  if (state.sessionReady) {
+    dispatchTextSubmission(submission);
+    return;
+  }
+
+  state.pendingTextSubmission = submission;
+  updateControls();
+  void beginSession();
+}
+
+function endSession(): void {
+  vscode.postMessage({ type: "stopSession" });
+  state.isConnecting = false;
+  state.sessionReady = false;
+  state.suppressNextResponse = false;
+  state.micMuted = false;
+  elements.muteMicButton.classList.remove("is-muted");
+  elements.muteMicButton.title = "Mute microphone";
+  elements.muteMicButton.setAttribute("aria-label", "Mute microphone");
+  stopTimer();
+  cleanupAudio();
+  updateControls();
+  setStatus("Disconnected");
+}
+
+function isGeminiMessage(value: unknown): value is GeminiServerMessage {
+  return typeof value === "object" && value !== null;
+}
+
+function handleServerMessage(payload: unknown): void {
+  if (!isGeminiMessage(payload)) {
+    showError("Gemini returned an unreadable message.");
+    return;
+  }
+
+  if (payload.error) {
+    showError(
+      payload.error.message ??
+        payload.error.status ??
+        "Gemini returned an API error."
+    );
+    setStatus("API error", "error");
+    return;
+  }
+
+  if (payload.setupComplete) {
+    state.isConnecting = false;
+    state.sessionReady = true;
+    state.suppressNextResponse = false;
+    startTimer();
+    updateControls();
+    setStatus("Listening", "live");
+    if (state.pendingTextSubmission) {
+      dispatchTextSubmission(state.pendingTextSubmission);
+    }
+    return;
+  }
+
+  const content = payload.serverContent;
+
+  if (content) {
+    // When the user speaks (voice input) after a stop, clear suppression.
+    const userText = content.inputTranscription?.text;
+    if (userText) {
+      state.suppressNextResponse = false;
+      ensureActiveChat(userText);
+      appendTranscript("user", userText, state.pendingVoiceContext);
+      state.pendingVoiceContext = undefined;
+    }
+
+    // Spoken transcription — the authoritative live caption.
+    const spokenText = content.outputTranscription?.text;
+    if (spokenText) {
+      // When in suppressed mode, skip this response entirely.
+      if (!state.suppressNextResponse) {
+        appendSpokenTranscript(spokenText);
+      }
+    }
+
+    for (const part of content.modelTurn?.parts ?? []) {
+      if (
+        part.inlineData?.data &&
+        (part.inlineData.mimeType ?? "audio/pcm").startsWith("audio/pcm")
+      ) {
+        // Only queue audio if we are not suppressing this response.
+        if (!state.suppressNextResponse) {
+          queueOutputAudio(part.inlineData.data);
+        }
+      }
+      // Keep visual model text separate from audio transcription. Mixing
+      // these streams breaks Markdown fences when their chunks interleave.
+      if (part.text && !state.suppressNextResponse) {
+        appendVisualText(part.text);
+      }
+    }
+
+    if (content.interrupted) {
+      stopPlayback();
+      setStatus("Listening", "live");
+    }
+
+    if (content.turnComplete) {
+      finishTranscriptTurn();
+      if (!state.playbackSources.size) {
+        setStatus("Listening", "live");
+      }
+    }
+  }
+
+  if (payload.toolCall) {
+    handleToolCall(payload.toolCall);
+  }
+}
+
+function handleToolCall(toolCall: GeminiToolCall): void {
+  for (const functionCall of toolCall.functionCalls ?? []) {
+    if (functionCall.name !== "render_markdown") {
+      continue;
+    }
+
+    const markdown = functionCall.args?.["markdown"];
+
+    if (typeof markdown !== "string") {
+      continue;
+    }
+
+    appendMarkdownBlock(markdown);
+
+    vscode.postMessage({
+      type: "sendToolResponse",
+      functionResponse: {
+        id: functionCall.id,
+        name: functionCall.name,
+        response: {
+          success: true
+        }
+      }
+    });
+  }
+}
+
+function handleHostMessage(message: HostMessage): void {
+  switch (message.type) {
+    case "initialState":
+      updateApiStatus(Boolean(message.apiConfigured));
+      if (message.preferences) {
+        applyPreferences(message.preferences);
+      }
+      updateSelection(message.selection);
+      updateCurrentPage(message.currentPage);
+      updateAttachments(message.attachments);
+      updateChatHistory(message.chats);
+      updateControls();
+      break;
+    case "apiStatus":
+      updateApiStatus(Boolean(message.configured));
+      elements.apiKeyInput.value = "";
+      elements.settingsFeedback.textContent = message.configured
+        ? "API key saved securely."
+        : "API key removed.";
+      elements.settingsFeedback.classList.remove("hidden");
+      break;
+    case "apiRequired":
+      updateApiStatus(false);
+      state.isConnecting = false;
+      cleanupAudio();
+      updateControls();
+      setActiveTab("settings");
+      elements.apiKeyInput.focus();
+      break;
+    case "preferences":
+      if (message.preferences) {
+        applyPreferences(message.preferences);
+      }
+      break;
+    case "preferencesSaved":
+      if (message.preferences) {
+        applyPreferences(message.preferences);
+      }
+      elements.settingsFeedback.textContent = "Preferences saved.";
+      elements.settingsFeedback.classList.remove("hidden");
+      elements.reconnectHint.classList.toggle(
+        "hidden",
+        !state.sessionReady && !state.isConnecting
+      );
+      break;
+    case "selectionChanged":
+      updateSelection(message.selection);
+      updateCurrentPage(message.currentPage);
+      break;
+    case "attachmentsChanged":
+      updateAttachments(message.attachments);
+      break;
+    case "microphoneLevel": {
+      const level = Math.max(0, message.level ?? 0);
+      state.micLevel += (level - state.micLevel) * 0.35;
+      elements.micMeter.style.width = `${Math.min(
+        100,
+        state.micLevel * 700
+      )}%`;
+      if (
+        state.preferences.autoInterrupt &&
+        level > 0.045 &&
+        hasQueuedPlayback()
+      ) {
+        stopPlayback();
+        setStatus("Listening", "live");
+      }
+      break;
+    }
+    case "micMuted":
+      state.micMuted = Boolean(message.muted);
+      elements.muteMicButton.classList.toggle("is-muted", state.micMuted);
+      elements.muteMicButton.title = state.micMuted
+        ? "Unmute microphone"
+        : "Mute microphone";
+      elements.muteMicButton.setAttribute(
+        "aria-label",
+        elements.muteMicButton.title
+      );
+      if (state.micMuted) {
+        state.micLevel = 0;
+        elements.micMeter.style.width = "0%";
+      }
+      break;
+    case "sessionConnecting":
+      setStatus("Connecting", "busy");
+      break;
+    case "sessionOpened":
+      setStatus("Configuring Gemini", "busy");
+      break;
+    case "serverMessage":
+      handleServerMessage(message.payload);
+      break;
+    case "sessionError":
+      state.pendingTextSubmission = undefined;
+      updateControls();
+      showError(message.message ?? "Gemini connection error.");
+      setStatus("Connection error", "error");
+      break;
+    case "sessionClosed":
+      state.pendingTextSubmission = undefined;
+      state.isConnecting = false;
+      state.sessionReady = false;
+      state.micMuted = false;
+      elements.muteMicButton.classList.remove("is-muted");
+      elements.muteMicButton.title = "Mute microphone";
+      elements.muteMicButton.setAttribute("aria-label", "Mute microphone");
+      stopTimer();
+      cleanupAudio();
+      updateControls();
+      if (message.intentional) {
+        setStatus("Disconnected");
+      } else {
+        const detail =
+          message.code === 1008
+            ? "Connection rejected. Check the API key and Gemini Live API access."
+            : message.reason || "The Gemini Live connection closed.";
+        showError(detail);
+        setStatus("Disconnected", "error");
+      }
+      break;
+    case "sessionStopped":
+      state.pendingTextSubmission = undefined;
+      state.isConnecting = false;
+      state.sessionReady = false;
+      state.micMuted = false;
+      elements.muteMicButton.classList.remove("is-muted");
+      elements.muteMicButton.title = "Mute microphone";
+      elements.muteMicButton.setAttribute("aria-label", "Mute microphone");
+      stopTimer();
+      cleanupAudio();
+      updateControls();
+      setStatus("Disconnected");
+      break;
+    case "textAccepted":
+      if (message.text) {
+        appendTranscript(
+          "user",
+          message.text,
+          message.context,
+          message.currentPage
+        );
+        if (state.currentUserMessage) {
+          state.currentUserMessage.closed = true;
+        }
+        if (state.currentModelMessage) {
+          state.currentModelMessage.closed = true;
+        }
+        state.currentUserMessage = undefined;
+        state.currentModelMessage = undefined;
+        state.pendingModelApplyTargetId = message.applyTargetId;
+        state.attachedCurrentPage = false;
+        renderCurrentPageAttachment();
+        elements.textInput.value = "";
+        resizeComposer();
+        setStatus("Thinking", "busy");
+      }
+      break;
+    case "textRejected":
+      showError(message.message ?? "The message could not be sent.");
+      break;
+    case "voiceContext":
+      state.pendingVoiceContext = message.context;
+      state.pendingModelApplyTargetId = message.applyTargetId;
+      // User is starting to speak — clear any suppression from a prior stop.
+      state.suppressNextResponse = false;
+      break;
+    case "workspaceSearchStarted":
+      showWorkspaceSearch(
+        message.requestId,
+        message.message ?? "Let me search the workspace and read the code."
+      );
+      setStatus("Searching workspace", "busy");
+      break;
+    case "workspaceSearchCompleted":
+      completeWorkspaceSearch(
+        message.requestId,
+        message.message ?? "Workspace search completed.",
+        message.files ?? []
+      );
+      setStatus("Thinking", "busy");
+      break;
+    case "codeCopied":
+      completeCodeAction(message.actionId, "Code copied");
+      break;
+    case "patchApplied":
+      completeCodeAction(message.actionId, "Applied to selection");
+      break;
+    case "chatSaved":
+      updateChatHistory(message.chats);
+      break;
+    case "chatLoaded":
+      if (message.chat) {
+        restoreChat(message.chat);
+      }
+      break;
+    case "chatDeleted":
+      updateChatHistory(message.chats);
+      if (message.chatId === state.activeChatId) {
+        state.activeChatId = undefined;
+        startNewChat();
+      }
+      break;
+    case "hostError":
+      enableCodeActions();
+      showError(message.message ?? "Echo could not continue.");
+      break;
+  }
+}
+
+function completeCodeAction(
+  actionId: string | undefined,
+  title: string
+): void {
+  if (!actionId) {
+    return;
+  }
+
+  const button = Array.from(
+    document.querySelectorAll<HTMLButtonElement>(".code-action-button")
+  ).find((candidate) => candidate.dataset["actionId"] === actionId);
+  if (button) {
+    button.disabled = false;
+    button.classList.add("is-success");
+    button.title = title;
+    button.setAttribute("aria-label", title);
+    window.setTimeout(() => {
+      button.classList.remove("is-success");
+    }, 1_400);
+  }
+}
+
+function enableCodeActions(): void {
+  document
+    .querySelectorAll<HTMLButtonElement>(
+      '.code-action-button:disabled[data-available="true"]'
+    )
+    .forEach((button) => {
+      button.disabled = false;
+    });
+}
+
+const MODE_COLORS = {
+  idle: [132, 145, 160],
+  connecting: [166, 173, 186],
+  listening: [76, 194, 255],
+  speaking: [255, 198, 92]
+} as const;
+
+function visualMode(): keyof typeof MODE_COLORS {
+  if (state.isConnecting) {
+    return "connecting";
+  }
+  if (!state.sessionReady) {
+    return "idle";
+  }
+  return state.playbackSources.size ? "speaking" : "listening";
+}
+
+function rgba(
+  color: readonly [number, number, number],
+  alpha: number
+): string {
+  return `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${alpha})`;
+}
+
+function sizeOrb(): void {
+  const rectangle = elements.orbCanvas.getBoundingClientRect();
+  elements.orbCanvas.width = Math.max(
+    1,
+    Math.round(rectangle.width * orb.devicePixelRatio)
+  );
+  elements.orbCanvas.height = Math.max(
+    1,
+    Math.round(rectangle.height * orb.devicePixelRatio)
+  );
+}
+
+function drawOrb(now: number): void {
+  window.requestAnimationFrame(drawOrb);
+  const context = orb.context;
+  const canvas = elements.orbCanvas;
+  if (!context || !canvas.width || !canvas.height) {
+    return;
+  }
+
+  const mode = visualMode();
+  const color = MODE_COLORS[mode];
+  const time = now / 1000;
+  const centerX = canvas.width / 2;
+  const centerY = canvas.height / 2;
+  const radius = canvas.width * 0.27;
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  elements.orbMode.textContent =
+    mode === "idle" ? "standby" : mode === "connecting" ? "connecting" : mode;
+
+  const glow = context.createRadialGradient(
+    centerX,
+    centerY,
+    radius * 0.1,
+    centerX,
+    centerY,
+    radius * 1.9
+  );
+  glow.addColorStop(0, rgba(color, mode === "idle" ? 0.13 : 0.24));
+  glow.addColorStop(1, "rgba(0,0,0,0)");
+  context.fillStyle = glow;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  context.beginPath();
+  context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+  context.strokeStyle = rgba(color, 0.48);
+  context.lineWidth = 1.2 * orb.devicePixelRatio;
+  context.stroke();
+
+  const barCount = orb.bars.length;
+  for (let index = 0; index < barCount; index += 1) {
+    let target = 0.03;
+    if (mode === "speaking" && state.analyser && state.analyserData) {
+      state.analyser.getByteTimeDomainData(state.analyserData);
+      const sampleIndex = Math.floor(
+        (index / barCount) * state.analyserData.length
+      );
+      target =
+        (Math.abs((state.analyserData[sampleIndex] ?? 128) - 128) / 128) * 2.1;
+    } else if (mode === "listening") {
+      target =
+        Math.min(1, state.micLevel * 9) *
+        (0.3 + 0.7 * Math.abs(Math.sin(index * 0.55 + time * 5.2)));
+    } else if (mode === "connecting") {
+      target = 0.08 + 0.08 * Math.abs(Math.sin(index * 0.36 - time * 6));
+    }
+
+    const currentBar = orb.bars[index] ?? 0;
+    const nextBar = currentBar + (target - currentBar) * 0.28;
+    orb.bars[index] = nextBar;
+    const angle = (index / barCount) * Math.PI * 2 - Math.PI / 2;
+    const amplitude =
+      nextBar * canvas.width * 0.16 + canvas.width * 0.008;
+    const startRadius = radius + 3 * orb.devicePixelRatio;
+    context.beginPath();
+    context.moveTo(
+      centerX + Math.cos(angle) * startRadius,
+      centerY + Math.sin(angle) * startRadius
+    );
+    context.lineTo(
+      centerX + Math.cos(angle) * (startRadius + amplitude),
+      centerY + Math.sin(angle) * (startRadius + amplitude)
+    );
+    context.strokeStyle = rgba(
+      color,
+      0.25 + 0.65 * Math.min(1, nextBar * 1.6)
+    );
+    context.lineWidth = 1.6 * orb.devicePixelRatio;
+    context.lineCap = "round";
+    context.stroke();
+  }
+}
+
+elements.settingsButton.addEventListener("click", () => {
+  setActiveTab("settings");
+});
+
+elements.historyButton.addEventListener("click", () => {
+  setActiveTab("history");
+});
+
+elements.backToChatButton.addEventListener("click", () => {
+  setActiveTab("chat");
+  elements.textInput.focus();
+});
+
+elements.backFromHistoryButton.addEventListener("click", () => {
+  setActiveTab("chat");
+  elements.textInput.focus();
+});
+
+elements.newChatButton.addEventListener("click", startNewChat);
+elements.newChatFromHistoryButton.addEventListener("click", startNewChat);
+
+elements.configureApiButton.addEventListener("click", () => {
+  setActiveTab("settings");
+  elements.apiKeyInput.focus();
+});
+
+elements.sessionButton.addEventListener("click", () => {
+  if (state.sessionReady || state.isConnecting) {
+    endSession();
+  } else {
+    void beginSession();
+  }
+});
+
+elements.muteMicButton.addEventListener("click", () => {
+  state.micMuted = !state.micMuted;
+  elements.muteMicButton.classList.toggle("is-muted", state.micMuted);
+  elements.muteMicButton.title = state.micMuted
+    ? "Unmute microphone"
+    : "Mute microphone";
+  elements.muteMicButton.setAttribute(
+    "aria-label",
+    elements.muteMicButton.title
+  );
+  vscode.postMessage({
+    type: "muteMic",
+    muted: state.micMuted
+  });
+  if (state.micMuted) {
+    state.micLevel = 0;
+    elements.micMeter.style.width = "0%";
+  }
+});
+
+elements.stopPlaybackButton.addEventListener("click", () => {
+  // Stop local playback immediately.
+  stopPlayback();
+  // Suppress the server's follow-up response so Gemini stays silent
+  // until the user speaks again.
+  state.suppressNextResponse = true;
+  setStatus("Listening", "live");
+  // Tell the server to interrupt the current turn.
+  vscode.postMessage({ type: "interruptTurn" });
+});
+
+elements.clearButton.addEventListener("click", startNewChat);
+
+elements.saveApiButton.addEventListener("click", () => {
+  const apiKey = elements.apiKeyInput.value.trim();
+  if (!apiKey) {
+    elements.settingsFeedback.textContent =
+      "Enter a Gemini API key before saving.";
+    elements.settingsFeedback.classList.remove("hidden");
+    return;
+  }
+
+  elements.settingsFeedback.classList.add("hidden");
+  vscode.postMessage({ type: "saveApiKey", value: apiKey });
+});
+
+elements.removeApiButton.addEventListener("click", () => {
+  vscode.postMessage({ type: "removeApiKey" });
+});
+
+elements.currentPageMention.addEventListener("mousedown", (event) => {
+  event.preventDefault();
+});
+
+elements.currentPageMention.addEventListener("click", attachCurrentPage);
+
+elements.removeCurrentPageButton.addEventListener("click", () => {
+  state.attachedCurrentPage = false;
+  renderCurrentPageAttachment();
+  elements.textInput.focus();
+});
+
+elements.attachFileButton.addEventListener("click", () => {
+  clearError();
+  setAttachmentMenu(false);
+  vscode.postMessage({ type: "pickFileAttachments" });
+});
+
+elements.attachImageButton.addEventListener("click", () => {
+  clearError();
+  setAttachmentMenu(false);
+  vscode.postMessage({ type: "pickImageAttachments" });
+});
+
+elements.attachmentButton.addEventListener("click", () => {
+  setAttachmentMenu(elements.attachmentMenu.classList.contains("hidden"));
+});
+
+elements.debugToggle.addEventListener("click", () => {
+  const expanded = elements.debugToggle.getAttribute("aria-expanded") === "true";
+  elements.debugToggle.setAttribute("aria-expanded", String(!expanded));
+  elements.debugPanel.classList.toggle("hidden", expanded);
+});
+
+elements.debugClearButton.addEventListener("click", () => {
+  elements.debugEntries.replaceChildren();
+  state.debugEntries = [];
+  elements.debugBadge.textContent = "0";
+  elements.debugBadge.classList.add("hidden");
+});
+
+elements.savePreferencesButton.addEventListener("click", () => {
+  const behaviorValue = elements.behaviorSelect.value;
+  const behavior: Behavior =
+    behaviorValue === "friendly" || behaviorValue === "expert"
+      ? behaviorValue
+      : "professional";
+
+  const preferences: Preferences = {
+    voice: elements.voiceSelect.value,
+    preferredLanguage: elements.languageSelect.value,
+    autoInterrupt: elements.autoInterruptInput.checked,
+    behavior
+  };
+  elements.settingsFeedback.classList.add("hidden");
+  vscode.postMessage({ type: "savePreferences", preferences });
+});
+
+elements.textForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  submitTextMessage();
+});
+
+elements.textInput.addEventListener("input", () => {
+  resizeComposer();
+  updateMentionMenu();
+  updateControls();
+});
+
+elements.textInput.addEventListener("click", updateMentionMenu);
+
+elements.textInput.addEventListener("blur", () => {
+  window.setTimeout(() => {
+    elements.mentionMenu.classList.add("hidden");
+  }, 100);
+});
+
+elements.textInput.addEventListener("keydown", (event) => {
+  if (!elements.mentionMenu.classList.contains("hidden")) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      state.mentionRange = undefined;
+      elements.mentionMenu.classList.add("hidden");
+      return;
+    }
+    if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      attachCurrentPage();
+      return;
+    }
+  }
+
+  if (
+    event.key !== "Enter" ||
+    event.shiftKey ||
+    event.isComposing
+  ) {
+    return;
+  }
+
+  event.preventDefault();
+  elements.textForm.requestSubmit();
+});
+
+document.addEventListener("click", (event) => {
+  const target = event.target;
+  if (
+    target instanceof Node &&
+    !elements.attachmentMenu.contains(target) &&
+    !elements.attachmentButton.contains(target)
+  ) {
+    setAttachmentMenu(false);
+  }
+});
+
+window.addEventListener("message", (event: MessageEvent<HostMessage>) => {
+  handleHostMessage(event.data);
+});
+
+window.addEventListener("resize", sizeOrb);
+window.addEventListener("beforeunload", () => {
+  postActiveChat();
+  if (state.sessionReady || state.isConnecting) {
+    vscode.postMessage({ type: "stopSession" });
+  }
+  cleanupAudio();
+});
+
+initializeSelects();
+updateControls();
+sizeOrb();
+window.requestAnimationFrame(drawOrb);
+vscode.postMessage({ type: "ready" });
