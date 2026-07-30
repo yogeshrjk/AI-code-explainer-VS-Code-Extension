@@ -1,6 +1,12 @@
 import WebSocket, { type RawData } from "ws";
+import {
+  createToolResponsePayload,
+  type LiveFunctionResponse
+} from "./liveProtocol.js";
 import { buildSystemInstruction } from "./prompts.js";
 import type { ImageContext, Preferences } from "./types.js";
+
+export type { LiveFunctionResponse } from "./liveProtocol.js";
 
 const MODEL = "gemini-3.1-flash-live-preview";
 const LIVE_API_ENDPOINT =
@@ -10,6 +16,7 @@ export type LiveSessionEvent =
   | { readonly type: "connecting" }
   | { readonly type: "opened" }
   | { readonly type: "serverMessage"; readonly payload: unknown }
+  | { readonly type: "debug"; readonly message: string }
   | { readonly type: "error"; readonly message: string }
   | {
       readonly type: "closed";
@@ -17,12 +24,6 @@ export type LiveSessionEvent =
       readonly reason: string;
       readonly intentional: boolean;
     };
-
-export interface LiveFunctionResponse {
-  readonly id: string;
-  readonly name: string;
-  readonly response: Readonly<Record<string, unknown>>;
-}
 
 export class LiveSession {
   private socket: WebSocket | undefined;
@@ -166,11 +167,11 @@ export class LiveSession {
   public sendToolResponses(
     functionResponses: readonly LiveFunctionResponse[]
   ): boolean {
-    return this.send({
-      toolResponse: {
-        functionResponses
-      }
+    this.onEvent({
+      type: "debug",
+      message: `Sending ${functionResponses.length} tool response${functionResponses.length === 1 ? "" : "s"}: ${functionResponses.map((item) => `${item.name} (${item.id})`).join(", ")}`
     });
+    return this.send(createToolResponsePayload(functionResponses));
   }
 
   public disconnect(): void {
@@ -196,8 +197,26 @@ export class LiveSession {
       return false;
     }
 
-    this.socket.send(JSON.stringify(payload));
-    return true;
+    try {
+      this.socket.send(JSON.stringify(payload), (error) => {
+        if (error) {
+          this.onEvent({
+            type: "error",
+            message: `Gemini WebSocket send failed: ${error.message}`
+          });
+        }
+      });
+      return true;
+    } catch (error) {
+      this.onEvent({
+        type: "error",
+        message:
+          error instanceof Error
+            ? `Gemini WebSocket send failed: ${error.message}`
+            : "Gemini WebSocket send failed."
+      });
+      return false;
+    }
   }
 
   private createSetupMessage(preferences: Preferences): unknown {
@@ -206,6 +225,10 @@ export class LiveSession {
         model: `models/${MODEL}`,
         generationConfig: {
           responseModalities: ["AUDIO"],
+          temperature: 0.3,
+          thinkingConfig: {
+            thinkingLevel: "MEDIUM"
+          },
           speechConfig: {
             voiceConfig: {
               prebuiltVoiceConfig: {
@@ -265,13 +288,14 @@ export class LiveSession {
               {
                 name: "render_markdown",
                 description:
-                  "Displays detailed structured content such as Markdown tables, code blocks, lists, or technical details in the chat UI. Call this whenever a table, code block, structured list, or detailed technical content would improve the answer.",
+                  "Render code, Markdown tables, lists, headings, and detailed visual technical content in the chat panel.",
                 parameters: {
                   type: "OBJECT",
                   properties: {
                     markdown: {
                       type: "STRING",
-                      description: "Complete Markdown content to display."
+                      description:
+                        "Complete Markdown content. Code must use fenced code blocks."
                     }
                   },
                   required: ["markdown"]
@@ -285,8 +309,10 @@ export class LiveSession {
         realtimeInputConfig: {
           automaticActivityDetection: {
             disabled: false,
-            prefixPaddingMs: 250,
-            silenceDurationMs: 700
+            startOfSpeechSensitivity: "START_SENSITIVITY_LOW",
+            endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
+            prefixPaddingMs: 500,
+            silenceDurationMs: 900
           },
           activityHandling: preferences.autoInterrupt
             ? "START_OF_ACTIVITY_INTERRUPTS"

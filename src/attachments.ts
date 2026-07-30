@@ -133,8 +133,8 @@ export class AttachmentStore {
       canSelectMany: true,
       openLabel: isImageSelection ? "Add images" : "Add files",
       title: isImageSelection
-        ? "Add image context to Echo"
-        : "Add file context to Echo",
+        ? "Add image context to GeminiX"
+        : "Add file context to GeminiX",
       filters: isImageSelection
         ? { Images: ["jpg", "jpeg", "png", "webp"] }
         : {
@@ -172,7 +172,7 @@ export class AttachmentStore {
       ).length;
       if (kind === "image" && imageCount >= MAX_IMAGE_ATTACHMENTS) {
         throw new Error(
-          `Echo accepts up to ${MAX_IMAGE_ATTACHMENTS} images per message.`
+          `GeminiX accepts up to ${MAX_IMAGE_ATTACHMENTS} images per message.`
         );
       }
 
@@ -288,7 +288,7 @@ export class AttachmentStore {
   private assertCapacity(additionalCount: number): void {
     if (this.attachments.size + additionalCount > MAX_ATTACHMENTS) {
       throw new Error(
-        `Echo accepts up to ${MAX_ATTACHMENTS} context attachments per message.`
+        `GeminiX accepts up to ${MAX_ATTACHMENTS} context attachments per message.`
       );
     }
   }

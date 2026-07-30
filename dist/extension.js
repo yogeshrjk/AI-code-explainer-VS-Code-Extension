@@ -3719,6 +3719,11 @@ var vscode2 = __toESM(require("vscode"));
 var import_node_path = require("node:path");
 var vscode = __toESM(require("vscode"));
 var MAX_CURRENT_PAGE_CHARACTERS = 8e4;
+var SUPPORTING_LINES_BEFORE_SELECTION = 30;
+var SUPPORTING_LINES_AFTER_SELECTION = 30;
+var MAX_IMPORT_SCAN_LINES = 100;
+var MAX_RELATED_IMPORT_LINES = 40;
+var IMPORT_PATTERN = /^\s*(?:import\b|from\s+\S+\s+import\b|using\b|#include\b|(?:const|let|var)\s+\S+\s*=\s*require\s*\()/u;
 function captureEditorContext() {
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.selection.isEmpty) {
@@ -3732,6 +3737,25 @@ function captureEditorContext() {
   const startLine = selection.start.line + 1;
   const endsAtNextLineStart = selection.end.character === 0 && selection.end.line > selection.start.line;
   const endLine = endsAtNextLineStart ? selection.end.line : selection.end.line + 1;
+  const selectedEndLineIndex = Math.max(
+    selection.start.line,
+    endsAtNextLineStart ? selection.end.line - 1 : selection.end.line
+  );
+  const supportingStartLineIndex = Math.max(
+    0,
+    selection.start.line - SUPPORTING_LINES_BEFORE_SELECTION
+  );
+  const supportingEndLineIndex = Math.min(
+    editor.document.lineCount - 1,
+    selectedEndLineIndex + SUPPORTING_LINES_AFTER_SELECTION
+  );
+  const supportingRange = new vscode.Range(
+    supportingStartLineIndex,
+    0,
+    supportingEndLineIndex,
+    editor.document.lineAt(supportingEndLineIndex).range.end.character
+  );
+  const relatedImports = readRelatedImports(editor.document);
   return {
     uri: editor.document.uri.toString(),
     fileName: (0, import_node_path.basename)(editor.document.fileName),
@@ -3743,7 +3767,11 @@ function captureEditorContext() {
     endLineIndex: selection.end.line,
     startCharacter: selection.start.character,
     endCharacter: selection.end.character,
-    text: selectedText
+    text: selectedText,
+    supportingStartLine: supportingStartLineIndex + 1,
+    supportingEndLine: supportingEndLineIndex + 1,
+    supportingText: editor.document.getText(supportingRange),
+    relatedImports
   };
 }
 function summarizeEditorContext(context) {
@@ -3790,6 +3818,20 @@ function summarizeCurrentPage(context) {
     relativePath: context.relativePath,
     label: context.relativePath
   };
+}
+function readRelatedImports(document) {
+  const importLines = [];
+  const scanLineCount = Math.min(
+    document.lineCount,
+    MAX_IMPORT_SCAN_LINES
+  );
+  for (let lineIndex = 0; lineIndex < scanLineCount && importLines.length < MAX_RELATED_IMPORT_LINES; lineIndex += 1) {
+    const line = document.lineAt(lineIndex).text;
+    if (IMPORT_PATTERN.test(line)) {
+      importLines.push(`${lineIndex + 1}: ${line}`);
+    }
+  }
+  return importLines.join("\n");
 }
 
 // src/attachments.ts
@@ -3888,7 +3930,7 @@ var AttachmentStore = class {
       canSelectFolders: false,
       canSelectMany: true,
       openLabel: isImageSelection ? "Add images" : "Add files",
-      title: isImageSelection ? "Add image context to Echo" : "Add file context to Echo",
+      title: isImageSelection ? "Add image context to GeminiX" : "Add file context to GeminiX",
       filters: isImageSelection ? { Images: ["jpg", "jpeg", "png", "webp"] } : {
         "Code and text": [...TEXT_EXTENSIONS].map(
           (extension2) => extension2.slice(1)
@@ -3921,7 +3963,7 @@ var AttachmentStore = class {
       ).length;
       if (kind === "image" && imageCount >= MAX_IMAGE_ATTACHMENTS) {
         throw new Error(
-          `Echo accepts up to ${MAX_IMAGE_ATTACHMENTS} images per message.`
+          `GeminiX accepts up to ${MAX_IMAGE_ATTACHMENTS} images per message.`
         );
       }
       const stat = await vscode2.workspace.fs.stat(uri);
@@ -4014,7 +4056,7 @@ var AttachmentStore = class {
   assertCapacity(additionalCount) {
     if (this.attachments.size + additionalCount > MAX_ATTACHMENTS) {
       throw new Error(
-        `Echo accepts up to ${MAX_ATTACHMENTS} context attachments per message.`
+        `GeminiX accepts up to ${MAX_ATTACHMENTS} context attachments per message.`
       );
     }
   }
@@ -4048,6 +4090,96 @@ var AttachmentStore = class {
 
 // src/chatHistory.ts
 var vscode3 = __toESM(require("vscode"));
+
+// src/chatSchema.ts
+var MAX_MARKDOWN_BLOCKS = 100;
+function parseChatMessage(value, maxCharacters) {
+  if (!isRecord(value)) {
+    throw new Error("A stored chat message is invalid.");
+  }
+  const role = value["role"];
+  if (role !== "user" && role !== "model") {
+    throw new Error("A stored chat message has an invalid role.");
+  }
+  const legacyText = readOptionalContent(value, "text", maxCharacters);
+  const spokenText = readOptionalContent(value, "spokenText", maxCharacters) ?? legacyText ?? "";
+  const visualText = readOptionalContent(
+    value,
+    "visualText",
+    maxCharacters
+  );
+  const markdownBlocks = readMarkdownBlocks(value["markdownBlocks"], maxCharacters);
+  if (!spokenText.trim() && !visualText?.trim() && !markdownBlocks.length) {
+    throw new Error("A stored chat message has no content.");
+  }
+  return {
+    id: readRequiredString(value, "id").slice(0, 80),
+    role,
+    spokenText,
+    visualText,
+    markdownBlocks: markdownBlocks.length ? markdownBlocks : void 0,
+    createdAt: readDate(value, "createdAt"),
+    contextLabel: readOptionalLabel(value, "contextLabel"),
+    currentPageLabel: readOptionalLabel(value, "currentPageLabel")
+  };
+}
+function chatMessageToText(message) {
+  const sections = [
+    message.spokenText,
+    message.visualText,
+    ...(message.markdownBlocks ?? []).map((block) => block.markdown)
+  ].filter((section) => Boolean(section?.trim()));
+  return [...new Set(sections)].join("\n\n");
+}
+function readMarkdownBlocks(value, maxCharacters) {
+  if (value === void 0) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("A stored Markdown block list is invalid.");
+  }
+  return value.slice(-MAX_MARKDOWN_BLOCKS).map((block) => {
+    if (!isRecord(block)) {
+      throw new Error("A stored Markdown block is invalid.");
+    }
+    const markdown = readOptionalContent(block, "markdown", maxCharacters);
+    if (!markdown?.trim()) {
+      throw new Error("A stored Markdown block has no content.");
+    }
+    return {
+      id: readRequiredString(block, "id").slice(0, 80),
+      markdown,
+      functionCallId: readOptionalLabel(block, "functionCallId")
+    };
+  });
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null;
+}
+function readRequiredString(value, key) {
+  const field = value[key];
+  if (typeof field !== "string" || !field.trim()) {
+    throw new Error(`The chat field '${key}' is invalid.`);
+  }
+  return field.trim();
+}
+function readOptionalContent(value, key, maxCharacters) {
+  const field = value[key];
+  return typeof field === "string" ? field.slice(0, maxCharacters) : void 0;
+}
+function readOptionalLabel(value, key) {
+  const field = value[key];
+  return typeof field === "string" && field.trim() ? field.trim().slice(0, 240) : void 0;
+}
+function readDate(value, key) {
+  const field = readRequiredString(value, key);
+  if (Number.isNaN(Date.parse(field))) {
+    throw new Error(`The chat date '${key}' is invalid.`);
+  }
+  return field;
+}
+
+// src/chatHistory.ts
 var CHAT_DIRECTORY_NAME = "chats";
 var MAX_CHAT_COUNT = 100;
 var MAX_CHAT_MESSAGES = 250;
@@ -4133,9 +4265,14 @@ var ChatHistoryStore = class {
         if (!message) {
           continue;
         }
-        const text = message.text.slice(-remainingCharacters);
+        const text = chatMessageToText(message).slice(-remainingCharacters);
         remainingCharacters -= text.length;
-        selected.unshift({ ...message, text });
+        selected.unshift({
+          ...message,
+          spokenText: text,
+          visualText: void 0,
+          markdownBlocks: void 0
+        });
       }
       return selected;
     } catch {
@@ -4151,13 +4288,13 @@ var ChatHistoryStore = class {
     }
   }
   validateChat(value) {
-    if (!isRecord(value)) {
+    if (!isRecord2(value)) {
       throw new Error("The chat file is invalid.");
     }
     const id = readString(value, "id");
     this.assertChatId(id);
-    const createdAt = readDate(value, "createdAt");
-    const updatedAt = readDate(value, "updatedAt");
+    const createdAt = readDate2(value, "createdAt");
+    const updatedAt = readDate2(value, "updatedAt");
     const rawMessages = value["messages"];
     if (!Array.isArray(rawMessages)) {
       throw new Error("The chat message list is invalid.");
@@ -4172,21 +4309,7 @@ var ChatHistoryStore = class {
     };
   }
   validateMessage(value) {
-    if (!isRecord(value)) {
-      throw new Error("A stored chat message is invalid.");
-    }
-    const role = value["role"];
-    if (role !== "user" && role !== "model") {
-      throw new Error("A stored chat message has an invalid role.");
-    }
-    return {
-      id: readString(value, "id").slice(0, 80),
-      role,
-      text: readString(value, "text").slice(0, MAX_MESSAGE_CHARACTERS),
-      createdAt: readDate(value, "createdAt"),
-      contextLabel: readOptionalString(value, "contextLabel"),
-      currentPageLabel: readOptionalString(value, "currentPageLabel")
-    };
+    return parseChatMessage(value, MAX_MESSAGE_CHARACTERS);
   }
   async prune() {
     const chats = await this.readAll();
@@ -4201,7 +4324,7 @@ var ChatHistoryStore = class {
     );
   }
 };
-function isRecord(value) {
+function isRecord2(value) {
   return typeof value === "object" && value !== null;
 }
 function readString(value, key) {
@@ -4211,11 +4334,7 @@ function readString(value, key) {
   }
   return field.trim();
 }
-function readOptionalString(value, key) {
-  const field = value[key];
-  return typeof field === "string" && field.trim() ? field.trim().slice(0, 240) : void 0;
-}
-function readDate(value, key) {
+function readDate2(value, key) {
   const field = readString(value, key);
   if (Number.isNaN(Date.parse(field))) {
     throw new Error(`The chat date '${key}' is invalid.`);
@@ -4234,6 +4353,22 @@ var import_websocket = __toESM(require_websocket(), 1);
 var import_websocket_server = __toESM(require_websocket_server(), 1);
 var wrapper_default = import_websocket.default;
 
+// src/liveProtocol.ts
+function createToolResponsePayload(functionResponses) {
+  return {
+    toolResponse: {
+      functionResponses
+    }
+  };
+}
+function isLiveFunctionResponse(value) {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value;
+  return typeof candidate["id"] === "string" && Boolean(candidate["id"].trim()) && typeof candidate["name"] === "string" && Boolean(candidate["name"].trim()) && typeof candidate["response"] === "object" && candidate["response"] !== null && !Array.isArray(candidate["response"]);
+}
+
 // src/prompts.ts
 var BEHAVIOR_INSTRUCTIONS = {
   professional: "Be clear, structured, concise, and professional.",
@@ -4242,68 +4377,29 @@ var BEHAVIOR_INSTRUCTIONS = {
 };
 function buildSystemInstruction(preferences) {
   return [
-    "You are Echo, a code explanation assistant inside Visual Studio Code.",
-    "Explain the user's selected code or coding question accurately.",
+    "You are GeminiX, a patient voice-first programming tutor integrated into Visual Studio Code.",
     `Always respond in ${preferences.preferredLanguage}, unless the user explicitly asks for another language.`,
     BEHAVIOR_INSTRUCTIONS[preferences.behavior],
-    "When returning code, use fenced Markdown with the correct language identifier and syntactically valid formatting.",
-    "If the user asks for code, always generate the requested code. Never respond with only an explanation when code is explicitly requested unless the user asks for explanation only.",
-    "Treat code generation as a strict requirement whenever the user's request includes implementing, writing, creating, completing, modifying, fixing, or refactoring code.",
-    "Ensure every generated code example is complete enough to be directly usable within the available context.",
-    "When you refer to a source location in the answer, mention only its line number or line range, for example 'Looking at line 16' or 'Looking at lines 16-24'. Do not include a full path, relative path, or filename in that sentence unless the user explicitly asks for it.",
-    "When primary selected code and retrieved workspace snippets are provided, treat the selection as authoritative and use workspace snippets only as supporting evidence.",
-    "Echo can search the open VS Code workspace with search_workspace and read exact files with read_workspace_file.",
-    "When the user asks you to find, locate, inspect, or read a file, definition, reference, route, component, or implementation that is not already included, briefly say 'Let me search the workspace' and call search_workspace.",
+    "The user may speak Hindi mixed with English programming terminology.",
+    "Respond in the language used by the user. For Hindi, use natural Indian Hindi in Devanagari while preserving programming terms and identifiers in their original Latin spelling.",
+    "Never convert Django to Jango. Preserve identifiers such as F, Q, QuerySet, class names, field names, variables, and functions exactly.",
+    "Understand the complete question before answering and produce one coherent response per user turn.",
+    "Do not repeat an explanation, provide multiple versions of the same answer, or repeat rich content after a tool call.",
+    "Speak at a calm teaching pace, use complete sentences, and add brief natural pauses between ideas.",
+    "Explain the concept first and then provide a relevant example.",
+    "Treat selected code as authoritative and retrieved workspace snippets as supporting evidence.",
+    "Never invent fields, classes, methods, model names, or business logic that are absent from the supplied project context.",
+    "When context is insufficient, label examples as generic or search the workspace before making project-specific claims.",
+    "GeminiX can search the open VS Code workspace with search_workspace and read exact files with read_workspace_file.",
+    "When a required file, definition, reference, route, component, or implementation is missing, briefly say that you will search and call search_workspace.",
     "After search_workspace returns a relevant path, call read_workspace_file when more of that file is required to answer accurately.",
-    "You may call these tools repeatedly to follow imports or usages, but keep searches focused.",
-    "Never tell the user to use VS Code search and never claim that you cannot search or read workspace files before using the tools.",
-    "Only make claims about workspace code that is present in selected code, an attachment, retrieved workspace evidence, or tool results.",
-    "Format every response for maximum readability and understanding.",
-    "Begin with a direct summary of the answer before providing detailed explanations.",
-    "Use clear Markdown headings, short paragraphs, numbered steps, bullet points, tables, and code blocks wherever they improve understanding.",
-    "Before inserting a heading, table, or code block, always finish the current sentence or paragraph first. Never leave a sentence incomplete before a structural break.",
-    "Do not force every response into the same structure. Choose the format that best matches the user's question.",
-    "Explain technical concepts in simple language first, then provide deeper technical details when useful.",
-    "Define unfamiliar technical terms when they first appear.",
-    "Preserve exact variable names, function names, class names, API names, commands, and other identifiers from the provided code.",
-    "Use practical examples or simple analogies when they make a complex concept easier to understand.",
-    "When explaining code, describe both what the code does and why it does it.",
-    "When appropriate, explain code execution in the order in which it occurs.",
-    "For short code selections, explain important lines individually.",
-    "For large code selections, group related lines into logical sections instead of explaining every line separately.",
-    "When a tabular explanation would improve clarity, use a Markdown table.",
-    "For line-by-line or section-by-section code explanations, prefer a table with columns such as 'Lines', 'Code Element', 'Explanation', and 'Purpose or Effect'.",
-    "For functions, methods, APIs, models, or components, use tables when helpful to explain parameters, return values, fields, dependencies, side effects, and possible errors.",
-    "For comparisons, use a table that clearly shows the differences, advantages, disadvantages, and recommended use cases.",
-    "For debugging questions, clearly separate the observed problem, root cause, evidence, solution, updated code, and verification steps.",
-    "For implementation questions, present the solution in the order the user should apply it.",
-    "When returning code, never place multiline code inside a Markdown table. Use fenced Markdown code blocks instead.",
-    "Inside tables, include only short identifiers or inline code using backticks.",
-    "When returning modified code, provide a complete replacement when enough context is available. Otherwise, clearly identify the exact section that must be replaced.",
-    "Ensure returned code is syntactically valid, internally consistent, secure, maintainable, and suitable for production use unless the user requests a simplified example.",
-    "Add comments only where they explain important decisions, non-obvious logic, validation, security, or error handling.",
-    "Do not remove existing functionality unless the user explicitly requests it or removal is necessary to correct an error.",
-    "Clearly distinguish confirmed behavior from assumptions, recommendations, and possible causes.",
-    "When information is missing, state the assumption being made instead of presenting it as a confirmed fact.",
-    "Highlight warnings, security concerns, breaking changes, destructive commands, and important limitations clearly.",
-    "Keep explanations focused and avoid repeating the same information in multiple sections.",
-    "Provide thorough, well-structured answers for every logical, technical, analytical, debugging, implementation, architecture, or code-related question unless the user explicitly asks for a brief answer.",
-    "For general conversational, factual, or casual questions that do not require technical reasoning, keep the response concise unless the user requests more detail.",
-    "Adjust the response length based on the complexity of the question, favoring completeness over brevity whenever technical reasoning is required.",
-    "End with a brief conclusion or recommended next action when it adds practical value.",
-    "Before sending the response, verify that the explanation is logically ordered, easy to scan, technically accurate, and understandable to a developer who is unfamiliar with the code.",
-    "You are a voice-first coding assistant.",
-    "Always complete every spoken sentence before emitting visual Markdown.",
-    "Never place a Markdown table, list, heading, or code block in the middle of a spoken sentence.",
-    "When a table, list, or code block is useful:",
-    "1. First speak a short natural explanation of what the visual content shows.",
-    "2. Keep speaking while the visual content is returned.",
-    "3. Do not read Markdown symbols or source code character by character.",
-    "4. For a table, verbally summarize its purpose, important columns, and up to three key entries.",
-    "5. For code, explain its purpose and important behavior in one or two sentences.",
-    "6. Call render_markdown with the complete table or code block whenever a structured visual element would improve the answer.",
-    "7. Never put fenced code blocks or pipe-delimited tables directly in the spoken transcript. Use render_markdown instead.",
-    "Do not stop the audio response merely because visual Markdown is included."
+    "Begin with a direct answer. Explain what code does, why it does it, its control flow, and important edge cases at the depth appropriate to the question.",
+    "When code, a table, a heading, or a detailed list is useful, first finish the current spoken sentence and briefly explain the purpose of the visual.",
+    "Then call render_markdown exactly once with the complete rich content. Use fenced code blocks with a correct language identifier.",
+    "Do not read Markdown syntax or source code character by character. Do not place Markdown inside an incomplete spoken sentence.",
+    "After a successful render_markdown call, continue from the next point without repeating the rendered content.",
+    "Visual Markdown must supplement the spoken answer; it must never interrupt or replace an unfinished spoken explanation.",
+    "Keep normal conversation concise. Give technical, debugging, and implementation questions enough detail to be correct and directly useful."
   ].join(" ");
 }
 function buildConversationHistoryPrompt(messages) {
@@ -4311,21 +4407,31 @@ function buildConversationHistoryPrompt(messages) {
     return "";
   }
   return [
-    "The user reopened this locally saved Echo chat. Use the following recent messages only to continue the prior conversation; current selected code and attachments remain authoritative.",
+    "The user reopened this locally saved GeminiX chat. Use the following recent messages only to continue the prior conversation; current selected code and attachments remain authoritative.",
     ...messages.map(
-      (message) => `${message.role === "user" ? "User" : "Echo"}: ${message.text}`
+      (message) => `${message.role === "user" ? "User" : "GeminiX"}: ${chatMessageToText(message)}`
     )
   ].join("\n\n");
 }
 function buildEditorContextPrompt(context) {
   return [
-    "Use the following selected editor code as private context for the user's current request.",
-    "Do not repeat the entire selection unless the user explicitly asks for it.",
+    "PRIMARY EDITOR CONTEXT",
+    "Use the exact selection as the authoritative target for the user's request.",
+    "Do not repeat the full context unless the user explicitly asks for it.",
     `File: ${context.relativePath}`,
-    `Selected lines: ${context.startLine}-${context.endLine}`,
+    `Exact selected lines: ${context.startLine}-${context.endLine}`,
     `\`\`\`${context.languageId}`,
     context.text,
-    "```"
+    "```",
+    context.relatedImports ? [
+      "Related import declarations from the same file:",
+      context.relatedImports
+    ].join("\n") : "",
+    `Supporting file window: lines ${context.supportingStartLine}-${context.supportingEndLine}`,
+    `\`\`\`${context.languageId}`,
+    context.supportingText,
+    "```",
+    "END PRIMARY EDITOR CONTEXT"
   ].join("\n");
 }
 function buildCurrentPagePrompt(context) {
@@ -4343,7 +4449,7 @@ function buildCurrentPagePrompt(context) {
 function buildWorkspaceContextPrompt(context) {
   if (!context.snippets.length) {
     return context.indexedFileCount > 0 ? [
-      `Echo directly searched the open VS Code workspace index (${context.indexedFileCount} source files) but did not retrieve a strong match yet.`,
+      `GeminiX directly searched the open VS Code workspace index (${context.indexedFileCount} source files) but did not retrieve a strong match yet.`,
       "Do not say that you cannot access or search the workspace.",
       "If the request requires a specific file, definition, or usage, call search_workspace with a focused filename or symbol and then call read_workspace_file for the returned path."
     ].join(" ") : [
@@ -4362,7 +4468,7 @@ function buildWorkspaceContextPrompt(context) {
     ].join("\n")
   );
   return [
-    "Echo searched and read the VS Code workspace and retrieved the following code as secondary supporting context.",
+    "GeminiX searched and read the VS Code workspace and retrieved the following code as secondary supporting context.",
     "They may be incomplete or only lexically related. Prefer the selected code and the user's request if evidence conflicts.",
     "Do not claim that you cannot access or search these files; their contents are included below.",
     ...snippets,
@@ -4506,11 +4612,11 @@ var LiveSession = class {
     return this.send({ realtimeInput: { text } });
   }
   sendToolResponses(functionResponses) {
-    return this.send({
-      toolResponse: {
-        functionResponses
-      }
+    this.onEvent({
+      type: "debug",
+      message: `Sending ${functionResponses.length} tool response${functionResponses.length === 1 ? "" : "s"}: ${functionResponses.map((item) => `${item.name} (${item.id})`).join(", ")}`
     });
+    return this.send(createToolResponsePayload(functionResponses));
   }
   disconnect() {
     const socket = this.socket;
@@ -4527,8 +4633,23 @@ var LiveSession = class {
     if (!this.socket || this.socket.readyState !== wrapper_default.OPEN) {
       return false;
     }
-    this.socket.send(JSON.stringify(payload));
-    return true;
+    try {
+      this.socket.send(JSON.stringify(payload), (error) => {
+        if (error) {
+          this.onEvent({
+            type: "error",
+            message: `Gemini WebSocket send failed: ${error.message}`
+          });
+        }
+      });
+      return true;
+    } catch (error) {
+      this.onEvent({
+        type: "error",
+        message: error instanceof Error ? `Gemini WebSocket send failed: ${error.message}` : "Gemini WebSocket send failed."
+      });
+      return false;
+    }
   }
   createSetupMessage(preferences) {
     return {
@@ -4536,6 +4657,10 @@ var LiveSession = class {
         model: `models/${MODEL}`,
         generationConfig: {
           responseModalities: ["AUDIO"],
+          temperature: 0.3,
+          thinkingConfig: {
+            thinkingLevel: "MEDIUM"
+          },
           speechConfig: {
             voiceConfig: {
               prebuiltVoiceConfig: {
@@ -4588,13 +4713,13 @@ var LiveSession = class {
               },
               {
                 name: "render_markdown",
-                description: "Displays detailed structured content such as Markdown tables, code blocks, lists, or technical details in the chat UI. Call this whenever a table, code block, structured list, or detailed technical content would improve the answer.",
+                description: "Render code, Markdown tables, lists, headings, and detailed visual technical content in the chat panel.",
                 parameters: {
                   type: "OBJECT",
                   properties: {
                     markdown: {
                       type: "STRING",
-                      description: "Complete Markdown content to display."
+                      description: "Complete Markdown content. Code must use fenced code blocks."
                     }
                   },
                   required: ["markdown"]
@@ -4608,8 +4733,10 @@ var LiveSession = class {
         realtimeInputConfig: {
           automaticActivityDetection: {
             disabled: false,
-            prefixPaddingMs: 250,
-            silenceDurationMs: 700
+            startOfSpeechSensitivity: "START_SENSITIVITY_LOW",
+            endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
+            prefixPaddingMs: 500,
+            silenceDurationMs: 900
           },
           activityHandling: preferences.autoInterrupt ? "START_OF_ACTIVITY_INTERRUPTS" : "NO_INTERRUPTION"
         }
@@ -4627,7 +4754,11 @@ function delay(milliseconds) {
 var import_pvrecorder_node = require("@picovoice/pvrecorder-node");
 var FRAME_LENGTH = 1024;
 var REQUIRED_SAMPLE_RATE = 16e3;
-var SPEECH_THRESHOLD = 0.045;
+var MINIMUM_SPEECH_THRESHOLD = 0.03;
+var NOISE_FLOOR_MULTIPLIER = 3.5;
+var NOISE_FLOOR_SMOOTHING = 0.96;
+var SPEECH_START_CONSECUTIVE_FRAMES = 4;
+var SPEECH_START_COOLDOWN_MS = 750;
 var END_OF_SPEECH_DELAY_MS = 850;
 var MicrophoneCapture = class {
   constructor(callbacks) {
@@ -4637,6 +4768,9 @@ var MicrophoneCapture = class {
   running = false;
   speechActive = false;
   speechSilenceStartedAt = 0;
+  speechCandidateFrames = 0;
+  lastSpeechStartedAt = 0;
+  noiseFloor = 8e-3;
   start() {
     if (this.running) {
       return;
@@ -4653,12 +4787,16 @@ var MicrophoneCapture = class {
     this.running = true;
     this.speechActive = false;
     this.speechSilenceStartedAt = 0;
+    this.speechCandidateFrames = 0;
+    this.lastSpeechStartedAt = 0;
+    this.noiseFloor = 8e-3;
     void this.readFrames(recorder);
   }
   stop() {
     this.running = false;
     this.speechActive = false;
     this.speechSilenceStartedAt = 0;
+    this.speechCandidateFrames = 0;
     const recorder = this.recorder;
     this.recorder = void 0;
     if (!recorder) {
@@ -4715,14 +4853,27 @@ var MicrophoneCapture = class {
   }
   updateSpeechState(level) {
     const now = Date.now();
-    if (level > SPEECH_THRESHOLD) {
+    const speechThreshold = Math.max(
+      MINIMUM_SPEECH_THRESHOLD,
+      this.noiseFloor * NOISE_FLOOR_MULTIPLIER
+    );
+    if (!this.speechActive && level <= speechThreshold) {
+      this.noiseFloor = this.noiseFloor * NOISE_FLOOR_SMOOTHING + level * (1 - NOISE_FLOOR_SMOOTHING);
+    }
+    if (level > speechThreshold) {
       this.speechSilenceStartedAt = 0;
       if (!this.speechActive) {
-        this.speechActive = true;
-        this.callbacks.onSpeechStart();
+        this.speechCandidateFrames += 1;
+        if (this.speechCandidateFrames >= SPEECH_START_CONSECUTIVE_FRAMES && now - this.lastSpeechStartedAt >= SPEECH_START_COOLDOWN_MS) {
+          this.speechActive = true;
+          this.speechCandidateFrames = 0;
+          this.lastSpeechStartedAt = now;
+          this.callbacks.onSpeechStart();
+        }
       }
       return;
     }
+    this.speechCandidateFrames = 0;
     if (!this.speechActive) {
       return;
     }
@@ -4811,7 +4962,7 @@ function readPreferences() {
 }
 async function savePreferences(preferences) {
   if (!isOneOf(preferences.voice, GEMINI_VOICES) || !isOneOf(preferences.preferredLanguage, PREFERRED_LANGUAGES) || !isOneOf(preferences.behavior, BEHAVIORS) || typeof preferences.autoInterrupt !== "boolean") {
-    throw new Error("One or more Echo settings are invalid.");
+    throw new Error("One or more GeminiX settings are invalid.");
   }
   const configuration = vscode4.workspace.getConfiguration("liveline");
   await Promise.all([
@@ -5579,7 +5730,7 @@ var VIEW_ID = "liveline.chatView";
 var MAX_APPLY_TARGETS = 20;
 var MAX_PATCH_CHARACTERS = 1e6;
 var MAX_WORKSPACE_TOOL_CALLS_PER_TURN = 8;
-var EchoViewProvider = class {
+var GeminiXViewProvider = class {
   constructor(extensionUri, secrets, globalStorageUri) {
     this.extensionUri = extensionUri;
     this.secrets = secrets;
@@ -5641,7 +5792,7 @@ var EchoViewProvider = class {
       password: true,
       placeHolder: "AIza...",
       prompt: "Enter your Google AI Studio Gemini API key",
-      title: "Configure Echo"
+      title: "Configure GeminiX"
     });
     if (apiKey === void 0) {
       return;
@@ -5652,7 +5803,7 @@ var EchoViewProvider = class {
     }
     await this.secrets.store(API_KEY_SECRET, apiKey.trim());
     await this.postApiStatus();
-    void vscode6.window.showInformationMessage("Echo API key saved securely.");
+    void vscode6.window.showInformationMessage("GeminiX API key saved securely.");
   }
   dispose() {
     this.disposeLiveResources();
@@ -5738,7 +5889,7 @@ var EchoViewProvider = class {
     } catch (error) {
       this.post({
         type: "hostError",
-        message: error instanceof Error ? error.message : "Echo could not continue."
+        message: error instanceof Error ? error.message : "GeminiX could not continue."
       });
     }
   }
@@ -5769,7 +5920,7 @@ var EchoViewProvider = class {
   }
   async updatePreferences(preferences) {
     if (!preferences) {
-      throw new Error("Echo settings were not provided.");
+      throw new Error("GeminiX settings were not provided.");
     }
     const savedPreferences = await savePreferences(preferences);
     this.post({
@@ -5885,14 +6036,25 @@ var EchoViewProvider = class {
     this.postAttachmentState();
   }
   sendToolResponse(functionResponse) {
-    if (!functionResponse) {
+    if (!isLiveFunctionResponse(functionResponse)) {
+      this.post({
+        type: "toolResponseStatus",
+        success: false,
+        message: "Rejected an invalid Gemini tool-response payload."
+      });
       return;
     }
     const session = this.session;
-    if (!session) {
-      return;
-    }
-    session.sendToolResponses([functionResponse]);
+    const sent = Boolean(
+      session?.sendToolResponses([functionResponse])
+    );
+    this.post({
+      type: "toolResponseStatus",
+      functionCallId: functionResponse.id,
+      functionName: functionResponse.name,
+      success: sent,
+      message: sent ? `Sent ${functionResponse.name} response (${functionResponse.id}).` : `Could not send ${functionResponse.name} response because the Gemini session is not connected.`
+    });
   }
   async pickFileAttachments() {
     try {
@@ -5939,7 +6101,7 @@ var EchoViewProvider = class {
       throw new Error("Choose a saved chat to delete.");
     }
     const confirmation = await vscode6.window.showWarningMessage(
-      "Delete this saved Echo chat? This cannot be undone.",
+      "Delete this saved GeminiX chat? This cannot be undone.",
       { modal: true },
       "Delete"
     );
@@ -5992,6 +6154,9 @@ var EchoViewProvider = class {
       case "serverMessage":
         void this.handleWorkspaceToolCalls(event.payload);
         this.post({ type: "serverMessage", payload: event.payload });
+        break;
+      case "debug":
+        this.post({ type: "debugLog", message: event.message });
         break;
       case "error":
         this.post({ type: "sessionError", message: event.message });
@@ -6094,7 +6259,7 @@ var EchoViewProvider = class {
     }
     this.post({ type: "patchApplied", actionId, targetId });
     void vscode6.window.showInformationMessage(
-      `Echo applied the code to ${vscode6.workspace.asRelativePath(target.uri, false)}.`
+      `GeminiX applied the code to ${vscode6.workspace.asRelativePath(target.uri, false)}.`
     );
   }
   async handleWorkspaceToolCalls(payload) {
@@ -6262,14 +6427,14 @@ var EchoViewProvider = class {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <link rel="stylesheet" href="${styleUri.toString()}">
-  <title>Echo</title>
+  <title>GeminiX</title>
 </head>
 <body>
   <div class="app-shell">
     <header class="app-header">
       <div class="brand">
         <span>
-          <strong>Echo</strong>
+          <strong>GeminiX</strong>
           <small>Gemini Live code assistant</small>
         </span>
       </div>
@@ -6439,7 +6604,7 @@ var EchoViewProvider = class {
               id="textInput"
               rows="1"
               autocomplete="off"
-              placeholder="Ask Echo about your code\u2026"
+              placeholder="Ask GeminiX about your code\u2026"
               aria-label="Chat message"
             ></textarea>
             <button id="sendButton" class="send-button" type="submit" disabled aria-label="Send message" title="Send">
@@ -6461,7 +6626,7 @@ var EchoViewProvider = class {
           </button>
           <span class="panel-heading-copy">
             <strong>Chat history</strong>
-            <small>Stored locally by Echo</small>
+            <small>Stored locally by GeminiX</small>
           </span>
           <button id="newChatFromHistoryButton" class="secondary-button compact" type="button">New chat</button>
         </div>
@@ -6479,7 +6644,7 @@ var EchoViewProvider = class {
           </button>
           <span>
             <strong>Settings</strong>
-            <small>Configure Echo</small>
+            <small>Configure GeminiX</small>
           </span>
         </div>
 
@@ -6580,7 +6745,7 @@ function displayFileName(filePath) {
   return filePath.split(/[\\/]/u).pop() ?? filePath;
 }
 function activate(context) {
-  const provider = new EchoViewProvider(
+  const provider = new GeminiXViewProvider(
     context.extensionUri,
     context.secrets,
     context.globalStorageUri

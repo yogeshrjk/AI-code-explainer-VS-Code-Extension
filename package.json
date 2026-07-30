@@ -1,10 +1,15 @@
 {
-  "name": "live-gemini-code-explainer",
-  "displayName": "Echo",
+  "name": "gemini-x",
+  "displayName": "GeminiX",
   "description": "Explore and explain selected code with Gemini Live inside VS Code.",
-  "version": "0.6.0",
+  "version": "0.6.1",
+  "icon": "media/gemini-x.png",
   "publisher": "YogeshRajak",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yogeshrjk/AI-code-explainer-VS-Code-Extension-.git"
+  },
   "engines": {
     "vscode": "^1.96.0"
   },
@@ -28,28 +33,30 @@
   "main": "./dist/extension.js",
   "files": [
     "dist/**",
+    "media/**",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "node esbuild.mjs",
     "check": "tsc --noEmit && eslint .",
-    "package": "npm run check && npm run build && vsce package --out echo-gemini-live-code-assistant-v0.6.0.vsix",
+    "package": "npm run check && npm run build && vsce package --out gemini-x-v0.6.1.vsix",
+    "test": "node --import tsx --test tests/*.test.ts",
     "vscode:prepublish": "npm run build"
   },
   "contributes": {
     "commands": [
       {
         "command": "liveline.configureApiKey",
-        "title": "Echo: Configure Gemini API Key"
+        "title": "GeminiX: Configure Gemini API Key"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
           "id": "liveline",
-          "title": "Echo",
-          "icon": "dist/icon.svg"
+          "title": "GeminiX",
+          "icon": "media/icon.svg"
         }
       ]
     },
@@ -57,13 +64,13 @@
       "liveline": [
         {
           "id": "liveline.chatView",
-          "name": "Echo",
+          "name": "GeminiX",
           "type": "webview"
         }
       ]
     },
     "configuration": {
-      "title": "Echo",
+      "title": "GeminiX",
       "properties": {
         "liveline.voice": {
           "type": "string",
@@ -125,7 +132,7 @@
             "Turkish",
             "Indonesian"
           ],
-          "description": "Language Echo asks Gemini to use for explanations."
+          "description": "Language GeminiX asks Gemini to use for explanations."
         },
         "liveline.autoInterrupt": {
           "type": "boolean",
@@ -161,6 +168,7 @@
     "esbuild": "^0.25.8",
     "eslint": "^9.32.0",
     "shiki": "^4.3.1",
+    "tsx": "^4.20.3",
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.38.0",
     "ws": "^8.18.3"

@@ -1,4 +1,8 @@
 import * as vscode from "vscode";
+import {
+  chatMessageToText,
+  parseChatMessage
+} from "./chatSchema.js";
 import type { ChatMessage, ChatSummary, StoredChat } from "./types.js";
 
 const CHAT_DIRECTORY_NAME = "chats";
@@ -107,9 +111,14 @@ export class ChatHistoryStore {
         if (!message) {
           continue;
         }
-        const text = message.text.slice(-remainingCharacters);
+        const text = chatMessageToText(message).slice(-remainingCharacters);
         remainingCharacters -= text.length;
-        selected.unshift({ ...message, text });
+        selected.unshift({
+          ...message,
+          spokenText: text,
+          visualText: undefined,
+          markdownBlocks: undefined
+        });
       }
       return selected;
     } catch {
@@ -155,23 +164,7 @@ export class ChatHistoryStore {
   }
 
   private validateMessage(value: unknown): ChatMessage {
-    if (!isRecord(value)) {
-      throw new Error("A stored chat message is invalid.");
-    }
-
-    const role = value["role"];
-    if (role !== "user" && role !== "model") {
-      throw new Error("A stored chat message has an invalid role.");
-    }
-
-    return {
-      id: readString(value, "id").slice(0, 80),
-      role,
-      text: readString(value, "text").slice(0, MAX_MESSAGE_CHARACTERS),
-      createdAt: readDate(value, "createdAt"),
-      contextLabel: readOptionalString(value, "contextLabel"),
-      currentPageLabel: readOptionalString(value, "currentPageLabel")
-    };
+    return parseChatMessage(value, MAX_MESSAGE_CHARACTERS);
   }
 
   private async prune(): Promise<void> {
@@ -201,16 +194,6 @@ function readString(
     throw new Error(`The chat field '${key}' is invalid.`);
   }
   return field.trim();
-}
-
-function readOptionalString(
-  value: Readonly<Record<string, unknown>>,
-  key: string
-): string | undefined {
-  const field = value[key];
-  return typeof field === "string" && field.trim()
-    ? field.trim().slice(0, 240)
-    : undefined;
 }
 
 function readDate(

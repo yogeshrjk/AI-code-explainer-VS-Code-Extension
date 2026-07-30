@@ -40,7 +40,7 @@ export async function savePreferences(
     !isOneOf(preferences.behavior, BEHAVIORS) ||
     typeof preferences.autoInterrupt !== "boolean"
   ) {
-    throw new Error("One or more Echo settings are invalid.");
+    throw new Error("One or more GeminiX settings are invalid.");
   }
 
   const configuration = vscode.workspace.getConfiguration("liveline");

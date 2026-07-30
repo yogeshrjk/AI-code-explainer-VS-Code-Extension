@@ -26,6 +26,20 @@ import darkPlus from "@shikijs/themes/dark-plus";
 import lightPlus from "@shikijs/themes/light-plus";
 import { createHighlighterCore } from "shiki/core";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
+import {
+  parseRichContent,
+  unescapeMarkdownPipes,
+  type TableAlignment,
+  type TableSegment
+} from "./markdownParser.js";
+import { shouldInterruptPlayback } from "./playbackPolicy.js";
+import { scheduleLatestRender } from "./renderCoordinator.js";
+import {
+  hashMarkdown,
+  mergeSpokenText,
+  mergeVisualText,
+  normalizeMarkdown
+} from "./streaming.js";
 
 interface VsCodeApi {
   postMessage(message: unknown): void;
@@ -71,7 +85,7 @@ type ChatRole = "user" | "model";
 interface ChatMessage {
   readonly id: string;
   readonly role: ChatRole;
-  readonly text: string;
+  readonly spokenText: string;
   readonly visualText?: string;
   readonly markdownBlocks?: readonly MarkdownBlock[];
   readonly createdAt: string;
@@ -122,6 +136,7 @@ interface ServerContent {
 interface MarkdownBlock {
   readonly id: string;
   readonly markdown: string;
+  readonly functionCallId?: string;
 }
 
 interface GeminiFunctionCall {
@@ -169,6 +184,9 @@ interface HostMessage {
   readonly text?: string;
   readonly level?: number;
   readonly muted?: boolean;
+  readonly success?: boolean;
+  readonly functionCallId?: string;
+  readonly functionName?: string;
 }
 
 interface TranscriptMessage {
@@ -189,6 +207,7 @@ interface TranscriptMessage {
 }
 
 const OUTPUT_SAMPLE_RATE = 24_000;
+const MAX_DEBUG_ENTRIES = 250;
 const highlighterPromise = createHighlighterCore({
   themes: [lightPlus, darkPlus],
   langs: [
@@ -374,6 +393,7 @@ const state = {
   chats: [] as readonly ChatSummary[],
   currentModelMessage: undefined as TranscriptMessage | undefined,
   currentUserMessage: undefined as TranscriptMessage | undefined,
+  handledFunctionCallIds: new Set<string>(),
   isConnecting: false,
   masterGain: undefined as GainNode | undefined,
   micLevel: 0,
@@ -464,6 +484,10 @@ function setStatus(
 function pushDebugLog(message: string): void {
   const time = new Date().toLocaleTimeString();
   state.debugEntries.push({ time, message });
+  if (state.debugEntries.length > MAX_DEBUG_ENTRIES) {
+    state.debugEntries.shift();
+    elements.debugEntries.firstElementChild?.remove();
+  }
 
   const entry = document.createElement("div");
   entry.className = "debug-entry";
@@ -801,7 +825,7 @@ function createMessage(
     role,
     wrapper,
     content,
-    spokenText: storedMessage?.text ?? "",
+    spokenText: storedMessage?.spokenText ?? "",
     visualText: storedMessage?.visualText ?? "",
     markdownBlocks: [...(storedMessage?.markdownBlocks ?? [])],
     closed: false,
@@ -815,7 +839,7 @@ function createMessage(
   state.chatMessages.push({
     id: message.id,
     role,
-    text: message.spokenText,
+    spokenText: message.spokenText,
     visualText: message.visualText,
     markdownBlocks: [...message.markdownBlocks],
     createdAt: storedMessage?.createdAt ?? new Date().toISOString(),
@@ -831,7 +855,6 @@ function appendTranscript(
   context?: ContextSummary,
   currentPage?: CurrentPageSummary
 ): void {
-  // User messages still use the simple concatenation approach.
   if (role === "user") {
     if (!text) {
       return;
@@ -844,7 +867,7 @@ function appendTranscript(
       state.currentUserMessage = message;
     }
 
-    message.spokenText += text;
+    message.spokenText = mergeSpokenText(message.spokenText, text);
     const storedIndex = state.chatMessages.findIndex(
       (candidate) => candidate.id === message.id
     );
@@ -853,7 +876,7 @@ function appendTranscript(
       if (existing) {
         state.chatMessages[storedIndex] = {
           ...existing,
-          text: message.spokenText
+          spokenText: message.spokenText
         };
       }
     }
@@ -861,92 +884,6 @@ function appendTranscript(
     scheduleChatSave();
     scrollTranscriptToBottom("auto");
   }
-}
-
-function mergeStreamingText(
-  currentText: string,
-  incomingText: string
-): string {
-  const current = currentText;
-  const incoming = incomingText;
-
-  if (!incoming) {
-    return current;
-  }
-
-  if (!current) {
-    return incoming;
-  }
-
-  // The incoming value is a cumulative transcript containing everything
-  // already received.
-  if (incoming.startsWith(current)) {
-    return incoming;
-  }
-
-  // The same chunk was delivered again.
-  if (current.endsWith(incoming)) {
-    return current;
-  }
-
-  const maximumOverlap = Math.min(current.length, incoming.length);
-
-  for (let overlap = maximumOverlap; overlap > 0; overlap -= 1) {
-    if (
-      current.slice(current.length - overlap) ===
-      incoming.slice(0, overlap)
-    ) {
-      return current + incoming.slice(overlap);
-    }
-  }
-
-  const currentLastCharacter = current.at(-1) ?? "";
-  const incomingFirstCharacter = incoming.at(0) ?? "";
-
-  const requiresSpace =
-    /[\p{L}\p{N},.;:!?)]/u.test(currentLastCharacter) &&
-    /[\p{L}\p{N}(]/u.test(incomingFirstCharacter);
-
-  return `${current}${requiresSpace ? " " : ""}${incoming}`;
-}
-
-function mergeStreamingContent(
-  currentText: string,
-  incomingText: string
-): string {
-  if (!incomingText) {
-    return currentText;
-  }
-
-  if (!currentText) {
-    return incomingText;
-  }
-
-  if (incomingText.startsWith(currentText)) {
-    return incomingText;
-  }
-
-  if (currentText.endsWith(incomingText)) {
-    return currentText;
-  }
-
-  const maximumOverlap = Math.min(
-    currentText.length,
-    incomingText.length
-  );
-
-  for (let overlap = maximumOverlap; overlap > 0; overlap -= 1) {
-    if (
-      currentText.slice(currentText.length - overlap) ===
-      incomingText.slice(0, overlap)
-    ) {
-      return currentText + incomingText.slice(overlap);
-    }
-  }
-
-  // Model text is a byte-for-byte content stream. Never inject spaces here,
-  // because a chunk can split an identifier, code token, or Markdown fence.
-  return currentText + incomingText;
 }
 
 function appendSpokenTranscript(text: string): void {
@@ -967,7 +904,7 @@ function appendSpokenTranscript(text: string): void {
     state.pendingModelApplyTargetId = undefined;
   }
 
-  message.spokenText = mergeStreamingText(
+  message.spokenText = mergeSpokenText(
     message.spokenText,
     text
   );
@@ -979,9 +916,9 @@ function appendSpokenTranscript(text: string): void {
   if (storedIndex >= 0) {
     const existing = state.chatMessages[storedIndex];
     if (existing) {
-      state.chatMessages[storedIndex] = {
-        ...existing,
-        text: message.spokenText
+        state.chatMessages[storedIndex] = {
+          ...existing,
+          spokenText: message.spokenText
       };
     }
   }
@@ -1009,7 +946,7 @@ function appendVisualText(text: string): void {
     state.pendingModelApplyTargetId = undefined;
   }
 
-  message.visualText = mergeStreamingContent(
+  message.visualText = mergeVisualText(
     message.visualText,
     text
   );
@@ -1032,11 +969,14 @@ function appendVisualText(text: string): void {
   scrollTranscriptToBottom("auto");
 }
 
-function appendMarkdownBlock(markdown: string): void {
-  const normalizedMarkdown = markdown.trim();
+function appendMarkdownBlock(
+  markdown: string,
+  functionCallId?: string
+): "added" | "duplicate" | "invalid" {
+  const normalizedMarkdown = normalizeMarkdown(markdown);
 
   if (!normalizedMarkdown) {
-    return;
+    return "invalid";
   }
 
   let message = state.currentModelMessage;
@@ -1053,16 +993,26 @@ function appendMarkdownBlock(markdown: string): void {
   }
 
   const alreadyExists = message.markdownBlocks.some(
-    (block) => block.markdown === normalizedMarkdown
+    (block) =>
+      (functionCallId && block.functionCallId === functionCallId) ||
+      (
+        hashMarkdown(block.markdown) ===
+          hashMarkdown(normalizedMarkdown) &&
+        normalizeMarkdown(block.markdown) === normalizedMarkdown
+      )
   );
 
-  if (alreadyExists) {
-    return;
+  const duplicatesVisualText =
+    normalizeMarkdown(message.visualText) === normalizedMarkdown;
+
+  if (alreadyExists || duplicatesVisualText) {
+    return "duplicate";
   }
 
   message.markdownBlocks.push({
     id: crypto.randomUUID(),
-    markdown: normalizedMarkdown
+    markdown: normalizedMarkdown,
+    functionCallId
   });
 
   const storedIndex = state.chatMessages.findIndex(
@@ -1081,6 +1031,7 @@ function appendMarkdownBlock(markdown: string): void {
   void renderModelMessage(message);
   scheduleChatSave();
   scrollTranscriptToBottom("auto");
+  return "added";
 }
 
 function fixHeadingFormatting(text: string): string {
@@ -1098,16 +1049,21 @@ function escapeHtml(text: string): string {
 }
 
 function renderInlineMarkdown(text: string): string {
-  // Escape HTML entities first, then apply safe Markdown formatting.
-  let html = escapeHtml(text);
+  const codeSpans: string[] = [];
+  const protectedText = text.replace(/`([^`\n]+)`/gu, (_, code: string) => {
+    const token = `\uE000CODE${codeSpans.length}\uE001`;
+    codeSpans.push(
+      `<code>${escapeHtml(unescapeMarkdownPipes(code))}</code>`
+    );
+    return token;
+  });
 
-  // Inline code: `code`
-  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-
-  // Bold: **text**
-  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-
-  return html;
+  let html = escapeHtml(unescapeMarkdownPipes(protectedText));
+  html = html.replace(/\*\*([^*]+)\*\*/gu, "<strong>$1</strong>");
+  return html.replace(
+    /\uE000CODE(\d+)\uE001/gu,
+    (_, index: string) => codeSpans[Number(index)] ?? ""
+  );
 }
 
 function renderMarkdownBlock(container: HTMLElement, text: string): void {
@@ -1143,9 +1099,10 @@ function renderMarkdownBlock(container: HTMLElement, text: string): void {
     const headingMatch = trimmedLine.match(/^(#{1,6})\s+(.+)$/);
     if (headingMatch) {
       if (inList) closeList();
-      const level = headingMatch[1]!.length;
-      const h = document.createElement("h" + level);
-      h.innerHTML = renderInlineMarkdown(headingMatch[2]!.trim());
+      const headingMarker = headingMatch[1] ?? "#";
+      const headingText = headingMatch[2] ?? "";
+      const h = document.createElement(`h${headingMarker.length}`);
+      h.innerHTML = renderInlineMarkdown(headingText.trim());
       container.append(h);
       continue;
     }
@@ -1161,8 +1118,8 @@ function renderMarkdownBlock(container: HTMLElement, text: string): void {
         container.append(listEl);
       }
       const li = document.createElement("li");
-      li.innerHTML = renderInlineMarkdown(ulMatch[1]!.trim());
-      listEl!.append(li);
+      li.innerHTML = renderInlineMarkdown((ulMatch[1] ?? "").trim());
+      listEl?.append(li);
       continue;
     }
 
@@ -1177,8 +1134,8 @@ function renderMarkdownBlock(container: HTMLElement, text: string): void {
         container.append(listEl);
       }
       const li = document.createElement("li");
-      li.innerHTML = renderInlineMarkdown(olMatch[1]!.trim());
-      listEl!.append(li);
+      li.innerHTML = renderInlineMarkdown((olMatch[1] ?? "").trim());
+      listEl?.append(li);
       continue;
     }
 
@@ -1190,196 +1147,35 @@ function renderMarkdownBlock(container: HTMLElement, text: string): void {
   }
 }
 
-function appendTextSegment(container: HTMLElement, text: string): void {
-  if (!text) {
-    return;
-  }
-
-  appendMixedContent(container, text);
-}
-
-function appendMixedContent(container: HTMLElement, text: string): void {
-  // Split by newline. Every line — including the final one — stays in the array
-  // and is processed.  There is no "trailing incomplete line" pop because:
-  //   (a) A valid complete table row must not be silently dropped just because
-  //       it happens to be the last line without a trailing '\n'.
-  //   (b) Genuinely incomplete lines (e.g. "| Cell 1 | Cel") won't match the
-  //       table-row criteria (they need at least two pipes and a leading "|"),
-  //       so they fall through to the plain-text buffer automatically.
-  //   (c) In streaming scenarios the entire message is re-rendered from scratch
-  //       on every chunk, so any intermediate mis-classification is corrected
-  //       immediately.
-  const lines = text.split("\n");
-
-  const result = document.createDocumentFragment();
-  const textBuffer: string[] = [];
-  let i = 0;
-
-  function flushTextBuffer(): void {
-    if (textBuffer.length === 0) return;
-    const raw = sanitizeSourceLocationText(textBuffer.join("\n"));
-    const wrapper = document.createElement("div");
-    wrapper.className = "rendered-text";
-    renderMarkdownBlock(wrapper, raw);
-    if (wrapper.childNodes.length > 0) {
-      result.append(wrapper);
-    }
-    textBuffer.length = 0;
-  }
-
-  while (i < lines.length) {
-    // Look for potential start of table block: a pipe row followed by a
-    // valid separator row.
-    const line = lines[i];
-    if (line === undefined) {
-      i++;
-      continue;
-    }
-    const trimmed = line.trim();
-    const pipeCount = (trimmed.match(/\|/g) ?? []).length;
-    if (
-      pipeCount >= 2 &&
-      trimmed.startsWith("|") &&
-      i + 1 < lines.length
-    ) {
-      const nextLine = lines[i + 1];
-      if (nextLine === undefined) {
-        break;
-      }
-      const nextTrimmed = nextLine.trim();
-      if (!isTableSeparatorRow(nextTrimmed)) {
-        textBuffer.push(line);
-        i++;
-        continue;
-      }
-
-      // Found a table — flush preceding prose.
-      flushTextBuffer();
-
-      const tableLines: string[] = [];
-      tableLines.push(trimmed);       // header row
-      tableLines.push(nextTrimmed);   // separator row
-      i += 2;
-
-      // Collect every valid table row until the first non-table line.
-      // A valid table row must start with "|" and contain at least two pipes.
-      // Rows may have any number of columns — we do *not* compare cell count
-      // against the header to detect trailing prose.  However, if a row does
-      // NOT end with a closing pipe (after trimming), the text after the last
-      // pipe is considered trailing prose — it is split off so it won't be
-      // rendered as a cell.
-      while (i < lines.length) {
-        const row = lines[i];
-        if (row === undefined) {
-          break;
-        }
-        const rowTrimmed = row.trim();
-        const rowPipeCount = (rowTrimmed.match(/\|/g) ?? []).length;
-        if (rowPipeCount >= 2 && rowTrimmed.startsWith("|")) {
-          // If the row does not end with a closing pipe, the content after
-          // the last pipe is trailing prose, not a cell value.
-          if (!rowTrimmed.endsWith("|")) {
-            const lastPipeIdx = rowTrimmed.lastIndexOf("|");
-            const afterLastPipe = rowTrimmed.slice(lastPipeIdx + 1).trim();
-            if (afterLastPipe.length > 0) {
-              // Include everything up to and including the last pipe as the
-              // table row, and flush the rest as prose after the table.
-              tableLines.push(rowTrimmed.slice(0, lastPipeIdx + 1));
-              textBuffer.push(afterLastPipe);
-              i++;
-              break;
-            }
-            // Fall through: no content after last pipe, accept the line as-is.
-          }
-          // Accept any well-formed pipe row regardless of column count.
-          tableLines.push(rowTrimmed);
-          i++;
-        } else {
-          break;
-        }
-      }
-
-      renderTable(result, tableLines);
-      continue;
-    }
-    // Not a table start — buffer as plain text.
-    textBuffer.push(line);
-    i++;
-  }
-
-  flushTextBuffer();
-  if (result.childNodes.length > 0) {
-    container.append(result);
-  }
-}
-
-function renderTable(
-  container: HTMLElement | DocumentFragment,
-  tableLines: string[]
+function renderTableSegment(
+  container: HTMLElement,
+  segment: TableSegment
 ): void {
-  let separatorIndex = -1;
-  for (let i = 0; i < tableLines.length; i++) {
-    const line = tableLines[i];
-    if (line !== undefined && isTableSeparatorRow(line)) {
-      separatorIndex = i;
-      break;
-    }
-  }
-
-  let headerRow: string[] | null = null;
-  const dataRows: string[][] = [];
-
-  if (separatorIndex >= 0) {
-    if (separatorIndex > 0) {
-      const firstLine = tableLines[0];
-      if (firstLine !== undefined) {
-        headerRow = parsePipedRow(firstLine);
-      }
-    }
-    for (let i = separatorIndex + 1; i < tableLines.length; i++) {
-      const line = tableLines[i];
-      if (line !== undefined) {
-        dataRows.push(parsePipedRow(line));
-      }
-    }
-  } else if (tableLines.length >= 2) {
-    const firstLine = tableLines[0];
-    if (firstLine !== undefined) {
-      headerRow = parsePipedRow(firstLine);
-    }
-    for (let i = 1; i < tableLines.length; i++) {
-      const line = tableLines[i];
-      if (line !== undefined) {
-        dataRows.push(parsePipedRow(line));
-      }
-    }
-  }
-
   const scrollWrapper = document.createElement("div");
   scrollWrapper.className = "response-table-scroll";
 
   const table = document.createElement("table");
   table.className = "response-table";
 
-  if (headerRow) {
-    const thead = document.createElement("thead");
-    const tr = document.createElement("tr");
-    for (const cell of headerRow) {
-      const th = document.createElement("th");
-      th.innerHTML = renderInlineMarkdown(cell);
-      tr.append(th);
-    }
-    thead.append(tr);
-    table.append(thead);
+  const thead = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  for (const [columnIndex, cell] of segment.header.entries()) {
+    const th = document.createElement("th");
+    th.innerHTML = renderInlineMarkdown(cell);
+    applyTableAlignment(th, segment.alignments[columnIndex]);
+    headerRow.append(th);
   }
+  thead.append(headerRow);
+  table.append(thead);
 
-  if (dataRows.length > 0) {
+  if (segment.rows.length > 0) {
     const tbody = document.createElement("tbody");
-    for (const row of dataRows) {
+    for (const row of segment.rows) {
       const tr = document.createElement("tr");
-      for (const cell of row) {
+      for (const [columnIndex, cell] of row.entries()) {
         const td = document.createElement("td");
         td.innerHTML = renderInlineMarkdown(cell);
+        applyTableAlignment(td, segment.alignments[columnIndex]);
         tr.append(td);
       }
       tbody.append(tr);
@@ -1391,39 +1187,13 @@ function renderTable(
   container.append(scrollWrapper);
 }
 
-function isTableSeparatorRow(line: string): boolean {
-  const stripped = line.replace(/\|/gu, "").replace(/\s/gu, "");
-  return stripped.length > 2 && /^[-:]+$/u.test(stripped);
-}
-
-function parsePipedRow(line: string): string[] {
-  let trimmed = line.trim();
-  if (trimmed.startsWith("|")) {
-    trimmed = trimmed.slice(1);
+function applyTableAlignment(
+  cell: HTMLTableCellElement,
+  alignment: TableAlignment
+): void {
+  if (alignment) {
+    cell.style.textAlign = alignment;
   }
-  if (trimmed.endsWith("|")) {
-    trimmed = trimmed.slice(0, -1);
-  }
-
-  // Protect pipes that appear inside backtick-delimited code spans so they
-  // are not treated as cell separators.  Replace each `|` between backticks
-  // with a placeholder, split on the remaining (real) separators, then
-  // restore the placeholders.
-  const protectedLine = trimmed.replace(/`[^`]*`/g, (match) =>
-    match.replace(/\|/g, "\x00"),
-  );
-
-  const cells = protectedLine.split("|").map((cell) => cell.trim());
-
-  // Restore placeholder sequences back to actual pipes.
-  for (let idx = 0; idx < cells.length; idx++) {
-    const cell = cells[idx];
-    if (cell !== undefined && cell.includes("\x00")) {
-      cells[idx] = cell.replace(/\x00/g, "|");
-    }
-  }
-
-  return cells;
 }
 
 function sanitizeSourceLocationText(text: string): string {
@@ -1466,10 +1236,12 @@ async function appendCodeBlock(
   container: HTMLElement,
   languageLabel: string,
   codeText: string,
-  applyTargetId: string | undefined
+  applyTargetId: string | undefined,
+  closed = true
 ): Promise<void> {
   const block = document.createElement("section");
   block.className = "code-block";
+  block.dataset["complete"] = String(closed);
 
   const header = document.createElement("div");
   header.className = "code-header";
@@ -1503,18 +1275,21 @@ async function appendCodeBlock(
     template.innerHTML = highlightedHtml;
     const pre = template.content.querySelector("pre");
     if (pre) {
-      pre.classList.add("echo-shiki");
+      pre.classList.add("gemini-x-shiki");
       block.append(header, pre);
       container.append(block);
       return;
     }
-  } catch {
-    // Fall back to an escaped plain-text code block if highlighting fails.
+  } catch (error) {
+    pushDebugLog(
+      `Shiki failed for '${languageLabel || "plain text"}'; using the visible fallback renderer (${error instanceof Error ? error.message : "unknown error"}).`
+    );
   }
 
   const pre = document.createElement("pre");
   const code = document.createElement("code");
   code.textContent = codeText;
+  block.dataset["renderer"] = "fallback";
   pre.append(code);
   block.append(header, pre);
   container.append(block);
@@ -1560,99 +1335,120 @@ async function appendMixedRichContent(
   source: string,
   applyTargetId: string | undefined
 ): Promise<void> {
-  const fencePattern =
-    /```([A-Za-z0-9_+#.-]*)[^\S\r\n]*\r?\n([\s\S]*?)(?:```|$)/g;
-  let cursor = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = fencePattern.exec(source)) !== null) {
-    appendTextSegment(container, source.slice(cursor, match.index));
-    await appendCodeBlock(
-      container,
-      match[1] ?? "",
-      match[2] ?? "",
-      applyTargetId
+  const segments = parseRichContent(source);
+  const codeCount = segments.filter((segment) => segment.type === "code").length;
+  const tableCount = segments.filter(
+    (segment) => segment.type === "table"
+  ).length;
+  if (codeCount || tableCount) {
+    pushDebugLog(
+      `Rich parser detected ${codeCount} code block${codeCount === 1 ? "" : "s"} and ${tableCount} table${tableCount === 1 ? "" : "s"}.`
     );
-    cursor = match.index + match[0].length;
   }
 
-  appendTextSegment(container, source.slice(cursor));
+  for (const segment of segments) {
+    if (segment.type === "code") {
+      await appendCodeBlock(
+        container,
+        segment.language,
+        segment.code,
+        applyTargetId,
+        segment.closed
+      );
+      continue;
+    }
+
+    if (segment.type === "table") {
+      renderTableSegment(container, segment);
+      continue;
+    }
+
+    const text = sanitizeSourceLocationText(segment.text);
+    if (!text.trim()) {
+      continue;
+    }
+    const wrapper = document.createElement("div");
+    wrapper.className = "rendered-text";
+    renderMarkdownBlock(wrapper, text);
+    if (wrapper.childNodes.length) {
+      container.append(wrapper);
+    }
+  }
 }
 
 async function renderModelMessage(
   message: TranscriptMessage
 ): Promise<void> {
-  // Rendering state belongs to this message. A global render lock can cause
-  // a new message to be skipped while an older Shiki render is still pending.
-  if (message.renderBusy) {
-    message.renderQueued = true;
-    return;
-  }
-
-  message.renderBusy = true;
-  message.renderQueued = false;
-
-  try {
-    const renderVersion = message.renderVersion + 1;
-    message.renderVersion = renderVersion;
-
-    const rendered = document.createDocumentFragment();
-
-    // Audio transcription is the spoken equivalent of the model response.
-    // It can contain fenced code blocks when the model generates code, so we
-    // parse it through appendMixedRichContent which handles code fences.
-    if (message.spokenText.trim()) {
-      const spokenContainer = document.createElement("div");
-      spokenContainer.className = "spoken-transcript";
-      await appendMixedRichContent(
-        spokenContainer,
-        message.spokenText.trim(),
-        undefined
+  await scheduleLatestRender(
+    message,
+    async (renderVersion) => {
+      pushDebugLog(
+        `Rendering message ${message.id.slice(0, 8)} at version ${renderVersion}.`
       );
-      rendered.append(spokenContainer);
+      const rendered = document.createDocumentFragment();
+
+      if (message.spokenText.trim()) {
+        const spokenContainer = document.createElement("div");
+        spokenContainer.className = "spoken-transcript";
+        await appendMixedRichContent(
+          spokenContainer,
+          message.spokenText,
+          message.applyTargetId
+        );
+        rendered.append(spokenContainer);
+      }
+
+      const seenMarkdown = new Set<string>();
+      const normalizedSpokenText = normalizeMarkdown(message.spokenText);
+      const richSources: {
+        readonly source: string;
+        readonly blockId?: string;
+      }[] = [];
+      const addRichSource = (source: string, blockId?: string): void => {
+        const normalized = normalizeMarkdown(source);
+        if (!normalized || normalized === normalizedSpokenText) {
+          return;
+        }
+        const key = `${hashMarkdown(normalized)}:${normalized}`;
+        if (seenMarkdown.has(key)) {
+          return;
+        }
+        seenMarkdown.add(key);
+        richSources.push({ source, blockId });
+      };
+
+      addRichSource(message.visualText);
+      for (const block of message.markdownBlocks) {
+        addRichSource(block.markdown, block.id);
+      }
+
+      for (const richSource of richSources) {
+        const richContent = document.createElement("div");
+        richContent.className = "message-rich-content";
+        if (richSource.blockId) {
+          richContent.dataset["blockId"] = richSource.blockId;
+        }
+        await appendMixedRichContent(
+          richContent,
+          richSource.source,
+          message.applyTargetId
+        );
+        rendered.append(richContent);
+      }
+
+      return rendered;
+    },
+    (rendered, renderVersion) => {
+      if (message.renderVersion !== renderVersion) {
+        pushDebugLog(
+          `Rejected stale render ${renderVersion} for message ${message.id.slice(0, 8)}.`
+        );
+        return;
+      }
+      message.content.replaceChildren(rendered);
+      scrollTranscriptToBottom("auto");
     }
-
-    // Model text is the visual stream. It contains Markdown tables and fenced
-    // code and must remain separate from outputTranscription.
-    if (message.visualText.trim()) {
-      const visualContainer = document.createElement("div");
-      visualContainer.className = "message-rich-content";
-      await appendMixedRichContent(
-        visualContainer,
-        message.visualText,
-        message.applyTargetId
-      );
-      rendered.append(visualContainer);
-    }
-
-    // Render each Markdown block as rich content (coming from render_markdown).
-    for (const block of message.markdownBlocks) {
-      const richContent = document.createElement("div");
-      richContent.className = "message-rich-content";
-      richContent.dataset["blockId"] = block.id;
-
-      await appendMixedRichContent(
-        richContent,
-        block.markdown,
-        message.applyTargetId
-      );
-
-      rendered.append(richContent);
-    }
-
-    if (message.renderVersion !== renderVersion) {
-      return;
-    }
-
-    message.content.replaceChildren(rendered);
-    scrollTranscriptToBottom("auto");
-  } finally {
-    message.renderBusy = false;
-    if (message.renderQueued) {
-      message.renderQueued = false;
-      void renderModelMessage(message);
-    }
-  }
+  );
 }
 
 function finishTranscriptTurn(): void {
@@ -1743,6 +1539,9 @@ function postActiveChat(): void {
       messages: state.chatMessages
     } satisfies StoredChat
   });
+  pushDebugLog(
+    `Queued chat save with ${state.chatMessages.length} message${state.chatMessages.length === 1 ? "" : "s"}.`
+  );
 }
 
 function startNewChat(): void {
@@ -1762,6 +1561,9 @@ function startNewChat(): void {
 }
 
 function restoreChat(chat: StoredChat): void {
+  pushDebugLog(
+    `Restoring chat ${chat.id.slice(0, 8)} with ${chat.messages.length} message${chat.messages.length === 1 ? "" : "s"}.`
+  );
   state.restoringChat = true;
   resetTranscriptView();
   state.activeChatId = chat.id;
@@ -1780,7 +1582,7 @@ function restoreChat(chat: StoredChat): void {
     if (storedMessage.role === "model") {
       void renderModelMessage(message);
     } else {
-      message.content.textContent = storedMessage.text;
+      message.content.textContent = storedMessage.spokenText;
     }
   }
   state.currentModelMessage = undefined;
@@ -1848,14 +1650,6 @@ function base64ToBytes(base64: string): Uint8Array {
     bytes[index] = binary.charCodeAt(index);
   }
   return bytes;
-}
-
-function hasQueuedPlayback(): boolean {
-  return Boolean(
-    state.playbackSources.size > 0 &&
-      state.audioContext &&
-      state.nextPlaybackTime > state.audioContext.currentTime + 0.04
-  );
 }
 
 function stopPlayback(): void {
@@ -2070,6 +1864,8 @@ function handleServerMessage(payload: unknown): void {
     state.isConnecting = false;
     state.sessionReady = true;
     state.suppressNextResponse = false;
+    state.handledFunctionCallIds.clear();
+    pushDebugLog("Gemini Live setup completed.");
     startTimer();
     updateControls();
     setStatus("Listening", "live");
@@ -2082,6 +1878,20 @@ function handleServerMessage(payload: unknown): void {
   const content = payload.serverContent;
 
   if (content) {
+    const parts = content.modelTurn?.parts ?? [];
+    const audioPartCount = parts.filter(
+      (part) =>
+        Boolean(part.inlineData?.data) &&
+        (part.inlineData?.mimeType ?? "audio/pcm").startsWith("audio/pcm")
+    ).length;
+    const visualCharacterCount = parts.reduce(
+      (total, part) => total + (part.text?.length ?? 0),
+      0
+    );
+    pushDebugLog(
+      `Gemini serverContent: audio=${audioPartCount}, spokenChars=${content.outputTranscription?.text?.length ?? 0}, visualChars=${visualCharacterCount}, complete=${Boolean(content.turnComplete)}, interrupted=${Boolean(content.interrupted)}.`
+    );
+
     // When the user speaks (voice input) after a stop, clear suppression.
     const userText = content.inputTranscription?.text;
     if (userText) {
@@ -2117,12 +1927,16 @@ function handleServerMessage(payload: unknown): void {
       }
     }
 
-    if (content.interrupted) {
+    if (shouldInterruptPlayback(content)) {
+      pushDebugLog("Gemini confirmed interruption; clearing audio playback.");
       stopPlayback();
       setStatus("Listening", "live");
     }
 
     if (content.turnComplete) {
+      pushDebugLog(
+        `Turn complete: spoken=${state.currentModelMessage?.spokenText.length ?? 0}, visual=${state.currentModelMessage?.visualText.length ?? 0}, markdownBlocks=${state.currentModelMessage?.markdownBlocks.length ?? 0}.`
+      );
       finishTranscriptTurn();
       if (!state.playbackSources.size) {
         setStatus("Listening", "live");
@@ -2137,26 +1951,55 @@ function handleServerMessage(payload: unknown): void {
 
 function handleToolCall(toolCall: GeminiToolCall): void {
   for (const functionCall of toolCall.functionCalls ?? []) {
-    if (functionCall.name !== "render_markdown") {
+    const functionCallId = functionCall.id?.trim();
+    const functionName = functionCall.name?.trim();
+    pushDebugLog(
+      `Gemini tool call: ${functionName ?? "unnamed"} (${functionCallId ?? "missing id"}), argumentKeys=${Object.keys(functionCall.args ?? {}).join(",") || "none"}.`
+    );
+
+    if (functionName !== "render_markdown") {
       continue;
     }
+
+    if (!functionCallId) {
+      pushDebugLog(
+        "Rejected render_markdown because Gemini did not provide a function-call ID."
+      );
+      continue;
+    }
+
+    if (state.handledFunctionCallIds.has(functionCallId)) {
+      pushDebugLog(
+        `Ignored duplicate render_markdown call (${functionCallId}).`
+      );
+      continue;
+    }
+    state.handledFunctionCallIds.add(functionCallId);
 
     const markdown = functionCall.args?.["markdown"];
-
-    if (typeof markdown !== "string") {
-      continue;
-    }
-
-    appendMarkdownBlock(markdown);
+    const renderResult =
+      typeof markdown === "string"
+        ? appendMarkdownBlock(markdown, functionCallId)
+        : "invalid";
+    pushDebugLog(
+      `render_markdown ${functionCallId}: ${renderResult}${typeof markdown === "string" ? `, chars=${markdown.length}` : ""}.`
+    );
 
     vscode.postMessage({
       type: "sendToolResponse",
       functionResponse: {
-        id: functionCall.id,
-        name: functionCall.name,
-        response: {
-          success: true
-        }
+        id: functionCallId,
+        name: functionName,
+        response:
+          renderResult === "invalid"
+            ? {
+                success: false,
+                error: "The markdown argument must be a non-empty string."
+              }
+            : {
+                success: true,
+                duplicate: renderResult === "duplicate"
+              }
       }
     });
   }
@@ -2221,14 +2064,6 @@ function handleHostMessage(message: HostMessage): void {
         100,
         state.micLevel * 700
       )}%`;
-      if (
-        state.preferences.autoInterrupt &&
-        level > 0.045 &&
-        hasQueuedPlayback()
-      ) {
-        stopPlayback();
-        setStatus("Listening", "live");
-      }
       break;
     }
     case "micMuted":
@@ -2254,6 +2089,25 @@ function handleHostMessage(message: HostMessage): void {
       break;
     case "serverMessage":
       handleServerMessage(message.payload);
+      break;
+    case "debugLog":
+      if (message.message) {
+        pushDebugLog(message.message);
+      }
+      break;
+    case "toolResponseStatus":
+      pushDebugLog(
+        message.message ??
+          `${message.functionName ?? "Tool"} response ${message.success ? "sent" : "failed"} (${message.functionCallId ?? "unknown id"}).`
+      );
+      if (!message.success) {
+        if (message.functionCallId) {
+          state.handledFunctionCallIds.delete(message.functionCallId);
+        }
+        showError(
+          message.message ?? "The Gemini tool response could not be sent."
+        );
+      }
       break;
     case "sessionError":
       state.pendingTextSubmission = undefined;
@@ -2367,7 +2221,7 @@ function handleHostMessage(message: HostMessage): void {
       break;
     case "hostError":
       enableCodeActions();
-      showError(message.message ?? "Echo could not continue.");
+      showError(message.message ?? "GeminiX could not continue.");
       break;
   }
 }

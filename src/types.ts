@@ -77,6 +77,10 @@ export interface EditorContext {
   readonly startCharacter: number;
   readonly endCharacter: number;
   readonly text: string;
+  readonly supportingStartLine: number;
+  readonly supportingEndLine: number;
+  readonly supportingText: string;
+  readonly relatedImports: string;
 }
 
 export interface ContextSummary {
@@ -120,10 +124,18 @@ export interface ImageContext {
 
 export type ChatRole = "user" | "model";
 
+export interface MarkdownBlock {
+  readonly id: string;
+  readonly markdown: string;
+  readonly functionCallId?: string;
+}
+
 export interface ChatMessage {
   readonly id: string;
   readonly role: ChatRole;
-  readonly text: string;
+  readonly spokenText: string;
+  readonly visualText?: string;
+  readonly markdownBlocks?: readonly MarkdownBlock[];
   readonly createdAt: string;
   readonly contextLabel?: string;
   readonly currentPageLabel?: string;

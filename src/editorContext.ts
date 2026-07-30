@@ -8,6 +8,12 @@ import type {
 } from "./types.js";
 
 const MAX_CURRENT_PAGE_CHARACTERS = 80_000;
+const SUPPORTING_LINES_BEFORE_SELECTION = 30;
+const SUPPORTING_LINES_AFTER_SELECTION = 30;
+const MAX_IMPORT_SCAN_LINES = 100;
+const MAX_RELATED_IMPORT_LINES = 40;
+const IMPORT_PATTERN =
+  /^\s*(?:import\b|from\s+\S+\s+import\b|using\b|#include\b|(?:const|let|var)\s+\S+\s*=\s*require\s*\()/u;
 
 export function captureEditorContext(): EditorContext | undefined {
   const editor = vscode.window.activeTextEditor;
@@ -27,6 +33,25 @@ export function captureEditorContext(): EditorContext | undefined {
   const endLine = endsAtNextLineStart
     ? selection.end.line
     : selection.end.line + 1;
+  const selectedEndLineIndex = Math.max(
+    selection.start.line,
+    endsAtNextLineStart ? selection.end.line - 1 : selection.end.line
+  );
+  const supportingStartLineIndex = Math.max(
+    0,
+    selection.start.line - SUPPORTING_LINES_BEFORE_SELECTION
+  );
+  const supportingEndLineIndex = Math.min(
+    editor.document.lineCount - 1,
+    selectedEndLineIndex + SUPPORTING_LINES_AFTER_SELECTION
+  );
+  const supportingRange = new vscode.Range(
+    supportingStartLineIndex,
+    0,
+    supportingEndLineIndex,
+    editor.document.lineAt(supportingEndLineIndex).range.end.character
+  );
+  const relatedImports = readRelatedImports(editor.document);
 
   return {
     uri: editor.document.uri.toString(),
@@ -39,7 +64,11 @@ export function captureEditorContext(): EditorContext | undefined {
     endLineIndex: selection.end.line,
     startCharacter: selection.start.character,
     endCharacter: selection.end.character,
-    text: selectedText
+    text: selectedText,
+    supportingStartLine: supportingStartLineIndex + 1,
+    supportingEndLine: supportingEndLineIndex + 1,
+    supportingText: editor.document.getText(supportingRange),
+    relatedImports
   };
 }
 
@@ -102,4 +131,26 @@ export function summarizeCurrentPage(
     relativePath: context.relativePath,
     label: context.relativePath
   };
+}
+
+function readRelatedImports(document: vscode.TextDocument): string {
+  const importLines: string[] = [];
+  const scanLineCount = Math.min(
+    document.lineCount,
+    MAX_IMPORT_SCAN_LINES
+  );
+
+  for (
+    let lineIndex = 0;
+    lineIndex < scanLineCount &&
+    importLines.length < MAX_RELATED_IMPORT_LINES;
+    lineIndex += 1
+  ) {
+    const line = document.lineAt(lineIndex).text;
+    if (IMPORT_PATTERN.test(line)) {
+      importLines.push(`${lineIndex + 1}: ${line}`);
+    }
+  }
+
+  return importLines.join("\n");
 }

@@ -56,6 +56,10 @@ textarea:focus-visible {
   display: none !important;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 .app-shell {
   display: flex;
   height: 100vh;
@@ -498,6 +502,8 @@ button:disabled {
 .message {
   display: flex;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: 7px 0;
   animation: message-in 140ms ease-out both;
 }
@@ -515,7 +521,9 @@ button:disabled {
 }
 
 .message-body {
+  width: 100%;
   min-width: 0;
+  max-width: 100%;
 }
 
 .message.user {
@@ -561,6 +569,8 @@ button:disabled {
 
 .message-content {
   min-width: 0;
+  max-width: 100%;
+  overflow: visible;
   color: var(--vscode-foreground);
   font-size: 12px;
   line-height: 1.55;
@@ -568,11 +578,19 @@ button:disabled {
   white-space: pre-wrap;
 }
 
+.message.model .message-content {
+  white-space: normal;
+}
+
 .rendered-text {
   white-space: pre-wrap;
 }
 
 .code-block {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   margin: 9px 0;
   overflow: hidden;
   border: 1px solid var(--vscode-editorWidget-border, var(--panel-border));
@@ -646,6 +664,8 @@ button:disabled {
 }
 
 .code-block pre {
+  display: block;
+  max-width: 100%;
   margin: 0;
   overflow-x: auto;
   padding: 10px;
@@ -656,6 +676,7 @@ button:disabled {
 
 .code-block code {
   display: block;
+  min-width: max-content;
   background: transparent;
   color: var(--vscode-editor-foreground);
   font-family: var(--vscode-editor-font-family, monospace);
@@ -666,7 +687,11 @@ button:disabled {
 }
 
 .spoken-transcript {
+  min-width: 0;
+  max-width: 100%;
   margin-bottom: 6px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .spoken-transcript p:first-child {
@@ -678,15 +703,19 @@ button:disabled {
 }
 
 .message-rich-content {
+  min-width: 0;
+  max-width: 100%;
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--panel-border);
 }
 
 .response-table-scroll {
-  overflow-x: auto;
+  width: 100%;
+  min-width: 0;
   max-width: 100%;
   margin: 9px 0;
+  overflow-x: auto;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -700,7 +729,9 @@ button:disabled {
 }
 
 .response-table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
   border-collapse: separate;
   border-spacing: 0;
   border: 1px solid var(--vscode-editorWidget-border, var(--panel-border));
@@ -759,7 +790,7 @@ button:disabled {
   );
 }
 
-.code-block .echo-shiki {
+.code-block .gemini-x-shiki {
   background-color: transparent !important;
 }
 

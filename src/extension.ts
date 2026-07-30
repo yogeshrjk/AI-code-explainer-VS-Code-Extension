@@ -13,6 +13,7 @@ import {
   type LiveFunctionResponse,
   type LiveSessionEvent
 } from "./liveSession.js";
+import { isLiveFunctionResponse } from "./liveProtocol.js";
 import { MicrophoneCapture } from "./microphoneCapture.js";
 import {
   buildConversationHistoryPrompt,
@@ -45,7 +46,7 @@ interface WebviewMessage {
   readonly currentPageUri?: string;
   readonly attachmentIds?: readonly string[];
   readonly preferences?: Preferences;
-  readonly functionResponse?: LiveFunctionResponse;
+  readonly functionResponse?: unknown;
 }
 
 interface ApplyTarget {
@@ -64,7 +65,7 @@ const MAX_APPLY_TARGETS = 20;
 const MAX_PATCH_CHARACTERS = 1_000_000;
 const MAX_WORKSPACE_TOOL_CALLS_PER_TURN = 8;
 
-class EchoViewProvider
+class GeminiXViewProvider
   implements vscode.WebviewViewProvider, vscode.Disposable
 {
   private view: vscode.WebviewView | undefined;
@@ -138,7 +139,7 @@ class EchoViewProvider
       password: true,
       placeHolder: "AIza...",
       prompt: "Enter your Google AI Studio Gemini API key",
-      title: "Configure Echo"
+      title: "Configure GeminiX"
     });
 
     if (apiKey === undefined) {
@@ -152,7 +153,7 @@ class EchoViewProvider
 
     await this.secrets.store(API_KEY_SECRET, apiKey.trim());
     await this.postApiStatus();
-    void vscode.window.showInformationMessage("Echo API key saved securely.");
+    void vscode.window.showInformationMessage("GeminiX API key saved securely.");
   }
 
   public dispose(): void {
@@ -243,7 +244,7 @@ class EchoViewProvider
         message:
           error instanceof Error
             ? error.message
-            : "Echo could not continue."
+            : "GeminiX could not continue."
       });
     }
   }
@@ -281,7 +282,7 @@ class EchoViewProvider
     preferences: Preferences | undefined
   ): Promise<void> {
     if (!preferences) {
-      throw new Error("Echo settings were not provided.");
+      throw new Error("GeminiX settings were not provided.");
     }
 
     const savedPreferences = await savePreferences(preferences);
@@ -425,18 +426,30 @@ class EchoViewProvider
   }
 
   private sendToolResponse(
-    functionResponse: LiveFunctionResponse | undefined
+    functionResponse: unknown
   ): void {
-    if (!functionResponse) {
+    if (!isLiveFunctionResponse(functionResponse)) {
+      this.post({
+        type: "toolResponseStatus",
+        success: false,
+        message: "Rejected an invalid Gemini tool-response payload."
+      });
       return;
     }
 
     const session = this.session;
-    if (!session) {
-      return;
-    }
-
-    session.sendToolResponses([functionResponse]);
+    const sent = Boolean(
+      session?.sendToolResponses([functionResponse])
+    );
+    this.post({
+      type: "toolResponseStatus",
+      functionCallId: functionResponse.id,
+      functionName: functionResponse.name,
+      success: sent,
+      message: sent
+        ? `Sent ${functionResponse.name} response (${functionResponse.id}).`
+        : `Could not send ${functionResponse.name} response because the Gemini session is not connected.`
+    });
   }
 
   private async pickFileAttachments(): Promise<void> {
@@ -492,7 +505,7 @@ class EchoViewProvider
     }
 
     const confirmation = await vscode.window.showWarningMessage(
-      "Delete this saved Echo chat? This cannot be undone.",
+      "Delete this saved GeminiX chat? This cannot be undone.",
       { modal: true },
       "Delete"
     );
@@ -552,6 +565,9 @@ class EchoViewProvider
       case "serverMessage":
         void this.handleWorkspaceToolCalls(event.payload);
         this.post({ type: "serverMessage", payload: event.payload });
+        break;
+      case "debug":
+        this.post({ type: "debugLog", message: event.message });
         break;
       case "error":
         this.post({ type: "sessionError", message: event.message });
@@ -687,7 +703,7 @@ class EchoViewProvider
     }
     this.post({ type: "patchApplied", actionId, targetId });
     void vscode.window.showInformationMessage(
-      `Echo applied the code to ${vscode.workspace.asRelativePath(target.uri, false)}.`
+      `GeminiX applied the code to ${vscode.workspace.asRelativePath(target.uri, false)}.`
     );
   }
 
@@ -896,14 +912,14 @@ class EchoViewProvider
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <link rel="stylesheet" href="${styleUri.toString()}">
-  <title>Echo</title>
+  <title>GeminiX</title>
 </head>
 <body>
   <div class="app-shell">
     <header class="app-header">
       <div class="brand">
         <span>
-          <strong>Echo</strong>
+          <strong>GeminiX</strong>
           <small>Gemini Live code assistant</small>
         </span>
       </div>
@@ -1073,7 +1089,7 @@ class EchoViewProvider
               id="textInput"
               rows="1"
               autocomplete="off"
-              placeholder="Ask Echo about your code…"
+              placeholder="Ask GeminiX about your code…"
               aria-label="Chat message"
             ></textarea>
             <button id="sendButton" class="send-button" type="submit" disabled aria-label="Send message" title="Send">
@@ -1095,7 +1111,7 @@ class EchoViewProvider
           </button>
           <span class="panel-heading-copy">
             <strong>Chat history</strong>
-            <small>Stored locally by Echo</small>
+            <small>Stored locally by GeminiX</small>
           </span>
           <button id="newChatFromHistoryButton" class="secondary-button compact" type="button">New chat</button>
         </div>
@@ -1113,7 +1129,7 @@ class EchoViewProvider
           </button>
           <span>
             <strong>Settings</strong>
-            <small>Configure Echo</small>
+            <small>Configure GeminiX</small>
           </span>
         </div>
 
@@ -1239,7 +1255,7 @@ function displayFileName(filePath: string): string {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  const provider = new EchoViewProvider(
+  const provider = new GeminiXViewProvider(
     context.extensionUri,
     context.secrets,
     context.globalStorageUri
