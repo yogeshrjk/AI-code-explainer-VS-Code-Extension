@@ -19,63 +19,72 @@
 
 **GeminiX** transforms your VS Code editor into a conversational AI workspace. Select any code, open GeminiX in the Activity Bar, and ask spoken or typed questions — just like pair programming with a senior developer who already understands your project.
 
-No more context-switching to a browser. No more copy-pasting code into external chat windows. GeminiX lives in your editor, brings Gemini's real-time voice and reasoning capabilities directly to your workflow, and keeps your code private.
-
 ---
 
-## ✨ Features
+## Features
 
-### 🎙️ Gemini Live Voice Conversation
+### Gemini Live Voice Conversation
 
 Real-time, streaming voice interaction with Gemini. Speak your question naturally, hear responses spoken back, and follow along with live input/output transcripts and audio playback. Choose from 30+ distinct Gemini voices.
 
-### 📐 Automatic Editor Context
+### Automatic Editor Context
 
-Select code in any editor — GeminiX captures the exact selection plus surrounding context (supporting lines, related imports) and sends it all privately to Gemini. The conversation shows only the file name and line range; your code stays out of the transcript.
+Select code in any editor — GeminiX captures the exact selection plus surrounding context and sends it privately to Gemini. The conversation shows only the file name and line range.
 
-### 🔍 Intelligent Workspace Search
+### Intelligent Workspace Search
 
 Gemini can pause mid-response, search your workspace for relevant files or symbols, read specific sections, and continue its answer — all through VS Code's native tooling. An in-memory lexical and filename index (kept current by a file watcher) enables fast, targeted retrieval without a vector database.
 
-### 📎 Rich Attachments
+### Rich Attachments
 
-- **`@` mention** — Type `@` in the chat input to attach the complete current editor file as context.
-- **`+` button** — Attach source files, text files, or images (JPEG, PNG, WebP) with your next typed question. Bounded by count and size limits; images are paced as Live video frames before the request.
+- `@` mention — Type `@` in the chat input to attach the complete current editor file as context.
+- `+` button — Attach source files, text files, or images (JPEG, PNG, WebP) with your next typed question. Bounded by count and size limits; images are paced as Live video frames before the request.
 
-### 🛠️ Code Actions
+### Code Actions
 
 Every code block in the response includes:
 
-- **Copy** — One-click copy to clipboard.
-- **Apply** — Select a destination range in your editor and replace it with the returned code. GeminiX remembers the original selection context for safe reuse.
+- Copy — One-click copy to clipboard.
+- Apply — Select a destination range in your editor and replace it with the returned code. GeminiX remembers the original selection context for safe reuse.
 
-### 🔇 Live Session Controls
+### Live Session Controls
 
-- **Mute** — Toggle microphone mute during a live session. Stops audio from being sent to Gemini while keeping the session alive.
-- **Stop** — Immediately halts audio playback and tells Gemini to stop generating. The model stays silent until your next question.
-- **Auto-interrupt** — When enabled, speaking while Gemini is responding will automatically interrupt the current reply.
+- Mute — Toggle microphone mute during a live session. Stops audio from being sent to Gemini while keeping the session alive.
+- Stop — Immediately halts audio playback and tells Gemini to stop generating. The model stays silent until your next question.
+- Auto-interrupt — When enabled, speaking while Gemini is responding will automatically interrupt the current reply.
 
-### 💾 Local Chat History
+### Local Chat History
 
-Every conversation is automatically saved as a local JSON file in VS Code's extension storage. Open the history panel to browse, reopen, or delete past chats. Reopening restores the full transcript and sends recent messages as continuation context so Gemini can pick up where you left off.
+Conversations are saved locally as JSON files. Open the history panel to browse, reopen, or delete past chats. Reopening restores the full transcript and sends recent messages as continuation context so Gemini can pick up where you left off.
 
-### 🎨 Shiki Syntax Highlighting
+### Shiki Syntax Highlighting
 
 Code blocks are rendered with full Shiki syntax highlighting, matching VS Code's light and dark themes for a seamless visual experience.
 
-### 🌐 Multi-language & Behavior Profiles
+### Multi-language & Behavior Profiles
 
-- **30+ Gemini voices** — Choose from Zephyr, Puck, Kore, Fenrir, and more.
-- **18 languages** — English, Hindi, Spanish, French, German, Japanese, Korean, Mandarin Chinese, Arabic, and more.
-- **3 behavior modes** — Professional (clear & structured), Friendly (conversational & patient), Expert (deeply technical with control flow, edge cases, and trade-offs).
+- 30+ Gemini voices — Choose from Zephyr, Puck, Kore, Fenrir, and more.
+- 18 languages — English, Hindi, Spanish, French, German, Japanese, Korean, Mandarin Chinese, Arabic, and more.
+- 3 behavior modes — Professional (clear & structured), Friendly (conversational & patient), Expert (deeply technical with control flow, edge cases, and trade-offs).
 
-### 🔑 Secure API Key Storage
+### Secure API Key Storage
 
 Your Gemini API key is stored via VS Code's SecretStorage API, which uses the OS-native keychain (macOS Keychain, Windows Credential Vault, Linux libsecret).
 
 ---
 
-## 📦 Installation
+## Installation
+
+### Build the VSIX package
+
+If you are building GeminiX from source, create the VSIX package before installing it:
+
+```bash
+npm install
+npx @vscode/vsce package
+```
+
+This generates a `.vsix` file (for example, `gemini-x-v0.6.1.vsix`) in the project root, which can then be installed using **Extensions: Install from VSIX...**.
 
 1. Open VS Code.
 2. Press `Cmd+Shift+P` (macOS) or `Ctrl+Shift+P` (Windows/Linux) to open the Command Palette.
@@ -84,11 +93,11 @@ Your Gemini API key is stored via VS Code's SecretStorage API, which uses the OS
 5. Open **GeminiX** from the Activity Bar (the GeminiX icon).
 6. Click the gear button (⚙️) in GeminiX and save your **Gemini API key** from [Google AI Studio](https://aistudio.google.com/).
 
-> **💡 Tip:** You can also configure your API key by running the command **GeminiX: Configure Gemini API Key** from the Command Palette.
+> **Tip:** You can also configure your API key by running the command **GeminiX: Configure Gemini API Key** from the Command Palette.
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Ask about selected code
 
@@ -113,15 +122,15 @@ Click the **`+`** button, choose source/text files or JPEG/PNG/WebP images. Remo
 
 ---
 
-## 🧭 Detailed Usage
+## Detailed Usage
 
 ### Editor Context
 
 When you select code and ask a question, GeminiX captures:
 
-- The **exact selection** (sent as authoritative context)
-- **Surrounding lines** (30 lines before and after the selection for supporting context)
-- **Related imports** from the file (up to 40 lines of import declarations)
+- The exact selection (sent as authoritative context)
+- Surrounding lines (30 lines before and after the selection for supporting context)
+- Related imports from the file (up to 40 lines of import declarations)
 
 The full selection and retrieved workspace snippets are never rendered in the conversation transcript — only the file name and line range are shown.
 
@@ -129,8 +138,8 @@ The full selection and retrieved workspace snippets are never rendered in the co
 
 GeminiX gives Gemini two workspace tools:
 
-- **`search_workspace`** — Searches the in-memory lexical index for filenames, symbols, and keywords.
-- **`read_workspace_file`** — Reads specific sections of a file by path.
+- `search_workspace` — Searches the in-memory lexical index for filenames, symbols, and keywords.
+- `read_workspace_file` — Reads specific sections of a file by path.
 
 Gemini can autonomously decide when to search, read, and incorporate results into its answer — up to 8 tool calls per turn, with up to 7 code snippets returned.
 
@@ -138,27 +147,27 @@ Gemini can autonomously decide when to search, read, and incorporate results int
 
 When a Live session is active, two buttons appear in the GeminiX header:
 
-| Button      | Action                                                                                                     |
-| ----------- | ---------------------------------------------------------------------------------------------------------- |
-| **Mute** 🎤 | Toggles microphone audio on/off. The mic icon shows a slash when muted.                                    |
-| **Stop** ⏹️ | Immediately halts audio playback and tells Gemini to stop. Gemini remains silent until your next question. |
+| Button   | Action                                                                                                     |
+| -------- | ---------------------------------------------------------------------------------------------------------- |
+| **Mute** | Toggles microphone audio on/off. The mic icon shows a slash when muted.                                    |
+| **Stop** | Immediately halts audio playback and tells Gemini to stop. Gemini remains silent until your next question. |
 
 ### Copy & Apply Code
 
 Every code block in a response includes two action buttons:
 
-- **📋 Copy** — Copies the code to your clipboard.
-- **📄 Apply** — If you have a selection in the active editor, replaces it with the code block. If the original selection from the question is still valid, GeminiX reuses it.
+- **Copy** — Copies the code to your clipboard.
+- **Apply** — If you have a selection in the active editor, replaces it with the code block. If the original selection from the question is still valid, GeminiX reuses it.
 
 ### Chat History
 
-- **Save** — Chats are saved automatically after each turn.
-- **Reopen** — Open the history panel (📁 button) and click any saved chat to restore the transcript and continue the conversation.
-- **Delete** — Remove individual chats from the history panel.
+- Save — Chats are saved automatically after each turn.
+- Reopen — Open the history panel and click any saved chat to restore the transcript and continue the conversation.
+- Delete — Remove individual chats from the history panel.
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 Access settings via VS Code's Settings UI (`Cmd+,` / `Ctrl+,`) and search for `liveline`, or click the gear button in GeminiX.
 
@@ -171,7 +180,7 @@ Access settings via VS Code's Settings UI (`Cmd+,` / `Ctrl+,`) and search for `l
 
 ---
 
-## 🛠️ Development
+## Development
 
 ```bash
 # Clone the repository
@@ -207,17 +216,17 @@ npm run package
 
 ---
 
-## 🔒 Privacy
+## Privacy
 
 GeminiX is designed with privacy in mind:
 
-- The selected code and workspace snippets are sent **directly to the Gemini API only**.
-- The conversation transcript shows **only the file name and line range** — never the actual code.
-- Your API key is stored in your **OS keychain** via VS Code SecretStorage.
-- All chat history is stored **locally** on your machine.
+- The selected code and workspace snippets are sent directly to the Gemini API only.
+- The conversation transcript shows only the file name and line range — never the actual code.
+- Your API key is stored in your OS keychain via VS Code SecretStorage.
+- All chat history is stored locally on your machine.
 
 ---
 
-## 📄 License
+## License
 
 MIT
