@@ -1878,19 +1878,19 @@ function handleServerMessage(payload: unknown): void {
   const content = payload.serverContent;
 
   if (content) {
-    const parts = content.modelTurn?.parts ?? [];
-    const audioPartCount = parts.filter(
-      (part) =>
-        Boolean(part.inlineData?.data) &&
-        (part.inlineData?.mimeType ?? "audio/pcm").startsWith("audio/pcm")
-    ).length;
-    const visualCharacterCount = parts.reduce(
-      (total, part) => total + (part.text?.length ?? 0),
-      0
-    );
-    pushDebugLog(
-      `Gemini serverContent: audio=${audioPartCount}, spokenChars=${content.outputTranscription?.text?.length ?? 0}, visualChars=${visualCharacterCount}, complete=${Boolean(content.turnComplete)}, interrupted=${Boolean(content.interrupted)}.`
-    );
+    // const parts = content.modelTurn?.parts ?? [];
+    // const audioPartCount = parts.filter(
+    //   (part) =>
+    //     Boolean(part.inlineData?.data) &&
+    //     (part.inlineData?.mimeType ?? "audio/pcm").startsWith("audio/pcm")
+    // ).length;
+    // const visualCharacterCount = parts.reduce(
+    //   (total, part) => total + (part.text?.length ?? 0),
+    //   0
+    // );
+    // pushDebugLog(
+    //   `Gemini serverContent: audio=${audioPartCount}, spokenChars=${content.outputTranscription?.text?.length ?? 0}, visualChars=${visualCharacterCount}, complete=${Boolean(content.turnComplete)}, interrupted=${Boolean(content.interrupted)}.`
+    // );
 
     // When the user speaks (voice input) after a stop, clear suppression.
     const userText = content.inputTranscription?.text;
@@ -2130,9 +2130,21 @@ function handleHostMessage(message: HostMessage): void {
         setStatus("Disconnected");
       } else {
         const detail =
-          message.code === 1008
-            ? "Connection rejected. Check the API key and Gemini Live API access."
-            : message.reason || "The Gemini Live connection closed.";
+          message.reason ||
+          (message.code === 1008
+            ? `Gemini Live rejected the connection (code ${message.code}). Verify the API key, selected model, Live API support, and session configuration.`
+            : `Gemini Live connection closed (code ${message.code ?? "unknown"}).`);
+        pushDebugLog(
+          `Session closed: code=${message.code ?? "unknown"}, reason=${message.reason ?? "none"}, intentional=${Boolean(message.intentional)}`
+        );
+        if (!message.intentional && state.apiConfigured) {
+          setStatus("Retrying connection...", "busy");
+          window.setTimeout(() => {
+            if (!state.sessionReady && !state.isConnecting) {
+              void beginSession();
+            }
+          }, 1500);
+        }
         showError(detail);
         setStatus("Disconnected", "error");
       }
