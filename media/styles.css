@@ -1141,74 +1141,112 @@ body.vscode-high-contrast .shiki span {
   fill: currentColor;
 }
 
-.workspace-search-status {
-  display: flex;
-  width: 100%;
-  align-items: flex-start;
-  flex-wrap: wrap;
-  gap: 7px;
-  margin: 6px 0;
-  padding: 8px 9px;
-  border: 1px solid
-    color-mix(in srgb, var(--accent) 24%, var(--panel-border));
-  border-radius: 5px;
-  background: color-mix(
-    in srgb,
-    var(--vscode-textCodeBlock-background, var(--vscode-editor-background)) 88%,
-    var(--accent) 5%
-  );
+.activity-indicator {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  margin: 4px 0 8px;
   color: var(--muted);
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.4;
 }
 
-.workspace-search-status::before {
-  width: 11px;
-  height: 11px;
-  flex: 0 0 auto;
-  border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  content: "";
-  animation: search-spin 800ms linear infinite;
-}
-
-.workspace-search-status[data-state="complete"]::before {
-  border: 0;
-  color: var(--success);
-  content: "✓";
-  animation: none;
-  font-size: 11px;
-  line-height: 11px;
-  text-align: center;
-}
-
-.workspace-file-list {
+.activity-indicator.visible {
   display: flex;
-  width: 100%;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding-left: 18px;
 }
 
-.workspace-file-list code {
-  max-width: 100%;
-  overflow: hidden;
-  padding: 2px 5px;
-  border-radius: 3px;
+.activity-indicator svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: #ffffff;
+  animation: search-pulse 1.4s ease-in-out infinite;
+}
+
+.activity-indicator .activity-label {
+  color: var(--muted);
+  animation: search-shimmer 1.6s ease-in-out infinite;
+}
+
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.message-attachment-image {
+  max-width: 180px;
+  max-height: 180px;
+  border-radius: 6px;
+  border: 1px solid var(--panel-border);
+  object-fit: cover;
+}
+
+.message-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
   background: var(
     --vscode-textCodeBlock-background,
     var(--vscode-editor-background)
   );
-  color: var(--vscode-textPreformat-foreground, var(--vscode-foreground));
+  color: var(--muted);
+  font-size: 10px;
+  max-width: 200px;
+  overflow: hidden;
+}
+
+.message-attachment-chip-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.message-attachment-chip-label {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-@keyframes search-spin {
-  to {
-    transform: rotate(360deg);
+@keyframes search-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+@keyframes search-shimmer {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes search-dots {
+  0% {
+    content: "";
+  }
+  25% {
+    content: ".";
+  }
+  50% {
+    content: "..";
+  }
+  75% {
+    content: "...";
   }
 }
 

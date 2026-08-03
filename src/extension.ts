@@ -64,6 +64,7 @@ interface LiveToolFunctionCall {
 const MAX_APPLY_TARGETS = 20;
 const MAX_PATCH_CHARACTERS = 1_000_000;
 const MAX_WORKSPACE_TOOL_CALLS_PER_TURN = 8;
+const MAX_URL_TEXT_CHARS = 60_000;
 
 class GeminiXViewProvider
   implements vscode.WebviewViewProvider, vscode.Disposable
@@ -370,6 +371,9 @@ class GeminiXViewProvider
       requestedAttachmentIds
     );
 
+    const displayAttachments = await this.attachmentStore.displayInfo(
+      requestedAttachmentIds
+    );
     this.post({
       type: "textAccepted",
       requestId,
@@ -377,7 +381,9 @@ class GeminiXViewProvider
       context: summarizeEditorContext(context),
       currentPage: summarizeCurrentPage(currentPageContext),
       applyTargetId,
-      attachments: requestedAttachmentIds
+      attachments: requestedAttachmentIds,
+      attachmentDisplays: displayAttachments,
+      hasImages: preparedAttachments.images.length > 0
     });
 
     const announceSearch = shouldAnnounceWorkspaceSearch(userText);
@@ -385,6 +391,7 @@ class GeminiXViewProvider
       this.post({
         type: "workspaceSearchStarted",
         requestId,
+        kind: "workspace",
         message: "Let me search the workspace and read the relevant code."
       });
     }
@@ -757,6 +764,7 @@ class GeminiXViewProvider
         this.post({
           type: "workspaceSearchStarted",
           requestId: id,
+          kind: "workspace",
           message: `Let me search the workspace for ${query}.`
         });
         try {
@@ -810,6 +818,7 @@ class GeminiXViewProvider
         this.post({
           type: "workspaceSearchStarted",
           requestId: id,
+          kind: "reading",
           message: `Let me read ${displayFileName(filePath)}.`
         });
         try {
@@ -838,6 +847,110 @@ class GeminiXViewProvider
                 error instanceof Error
                   ? error.message
                   : "The workspace file could not be read."
+            }
+          });
+        }
+        continue;
+      }
+
+      if (name === "fetch_url") {
+        const url = getStringArgument(functionCall.args, "url");
+        if (!url || !/^https?:\/\//i.test(url)) {
+          responses.push({
+            id,
+            name,
+            response: { error: "A valid http(s) URL is required." }
+          });
+          continue;
+        }
+
+        this.post({
+          type: "workspaceSearchStarted",
+          requestId: id,
+          kind: "reading",
+          message: `Let me open ${url}.`
+        });
+        try {
+          const page = await fetchUrlAsText(url);
+          this.post({
+            type: "workspaceSearchCompleted",
+            requestId: id,
+            message: `Fetched ${url}.`
+          });
+          responses.push({
+            id,
+            name,
+            response: {
+              url,
+              title: page.title,
+              text: page.text,
+              truncated: page.truncated
+            }
+          });
+        } catch (error) {
+          responses.push({
+            id,
+            name,
+            response: {
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "The URL could not be fetched."
+            }
+          });
+        }
+        continue;
+      }
+
+      if (name === "search_web") {
+        const query = getStringArgument(functionCall.args, "query");
+        if (!query) {
+          responses.push({
+            id,
+            name,
+            response: { error: "A non-empty search query is required." }
+          });
+          continue;
+        }
+        const source =
+          getStringArgument(functionCall.args, "source") ?? "wikipedia";
+
+        this.post({
+          type: "workspaceSearchStarted",
+          requestId: id,
+          kind: "web",
+          message: `Let me search ${source} for ${query}.`
+        });
+        try {
+          const results = await searchWebSource(query, source);
+          this.post({
+            type: "workspaceSearchCompleted",
+            requestId: id,
+            message: results.length
+              ? `Found ${results.length} result${results.length === 1 ? "" : "s"} on ${source}.`
+              : `No results on ${source} for ${query}.`
+          });
+          responses.push({
+            id,
+            name,
+            response: {
+              query,
+              source,
+              results,
+              message: results.length
+                ? `Results from ${source} were found. Fetch the most relevant one with fetch_url.`
+                : `No matching results were found on ${source}. Try another source or a simpler query.`
+            }
+          });
+        } catch (error) {
+          responses.push({
+            id,
+            name,
+            response: {
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "The web search failed."
             }
           });
         }
@@ -910,7 +1023,7 @@ class GeminiXViewProvider
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <link rel="stylesheet" href="${styleUri.toString()}">
   <title>GeminiX</title>
 </head>
@@ -1141,7 +1254,7 @@ class GeminiXViewProvider
             </span>
             <span id="apiStatusDot" class="api-status-dot"></span>
           </div>
-          <label class="field">
+          <label id="apiKeyField" class="field">
             <span>API key</span>
             <input id="apiKeyInput" type="password" spellcheck="false" autocomplete="off" placeholder="AIza…">
           </label>
@@ -1252,6 +1365,499 @@ function shouldAnnounceWorkspaceSearch(userText: string): boolean {
 
 function displayFileName(filePath: string): string {
   return filePath.split(/[\\/]/u).pop() ?? filePath;
+}
+
+const GITHUB_REPO_URL = /^https?:\/\/github\.com\/([^/?#]+)\/([^/?#]+)/i;
+
+async function fetchUrlAsText(url: string): Promise<{
+  title: string;
+  text: string;
+  truncated: boolean;
+}> {
+  const { body, contentType } = await fetchWithTimeout(url);
+  const title = contentType.includes("text/html")
+    ? /<title[^>]*>([^<]*)<\/title>/i.exec(body)?.[1]?.trim() || url
+    : url;
+  const htmlText = contentType.includes("text/html") ? stripHtml(body) : body;
+
+  let text = htmlText;
+  const repoMatch = GITHUB_REPO_URL.exec(url);
+  if (repoMatch?.[1] && repoMatch[2]) {
+    const readme = await fetchRawReadme(
+      repoMatch[1],
+      repoMatch[2].replace(/\.git$/i, "")
+    );
+    if (readme) {
+      text = `${htmlText}\n\n--- RAW README ---\n${readme}`;
+    }
+  }
+
+  const truncated = text.length > MAX_URL_TEXT_CHARS;
+  if (truncated) {
+    text = `${text.slice(0, MAX_URL_TEXT_CHARS)}\n…[content truncated for length]`;
+  }
+  return { title, text, truncated };
+}
+
+async function fetchWithTimeout(url: string): Promise<{
+  body: string;
+  contentType: string;
+}> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, 15_000);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      redirect: "follow",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; GeminiX/1.0)",
+        Accept: "text/html,text/plain,application/json,*/*"
+      }
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} ${response.statusText}`);
+    }
+    return {
+      body: await response.text(),
+      contentType: response.headers.get("content-type") ?? ""
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function fetchRawReadme(
+  owner: string,
+  repo: string
+): Promise<string | undefined> {
+  for (const candidate of [
+    `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/README.md`,
+    `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/README.rst`,
+    `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/readme.md`
+  ]) {
+    try {
+      const { body } = await fetchWithTimeout(candidate);
+      if (!body.startsWith("404:")) {
+        return body;
+      }
+    } catch {
+      // Try the next README candidate.
+    }
+  }
+  return undefined;
+}
+
+const WIKIPEDIA_SEARCH_URL =
+  "https://en.wikipedia.org/w/api.php?action=query&list=search&srlimit=5&format=json&formatversion=2";
+
+interface WebSearchResult {
+  readonly title: string;
+  readonly url: string;
+  readonly description: string;
+}
+
+async function searchWikipedia(
+  query: string
+): Promise<readonly WebSearchResult[]> {
+  const { body } = await fetchWithTimeout(
+    `${WIKIPEDIA_SEARCH_URL}&srsearch=${encodeURIComponent(query)}`
+  );
+  const data: unknown = JSON.parse(body);
+  if (typeof data !== "object" || data === null) {
+    return [];
+  }
+  const search = (data as { query?: { search?: unknown } }).query?.search;
+  if (!Array.isArray(search)) {
+    return [];
+  }
+  return search
+    .map((item): WebSearchResult | undefined => {
+      const record = item as { title?: unknown; snippet?: unknown };
+      const title = typeof record.title === "string" ? record.title : "";
+      if (!title) {
+        return undefined;
+      }
+      return {
+        title,
+        url: `https://en.wikipedia.org/wiki/${encodeURIComponent(
+          title.replace(/ /g, "_")
+        )}`,
+        description: stripHtml(
+          typeof record.snippet === "string" ? record.snippet : ""
+        )
+      };
+    })
+    .filter((result): result is WebSearchResult => result !== undefined);
+}
+
+async function searchWebSource(
+  query: string,
+  source: string
+): Promise<readonly WebSearchResult[]> {
+  switch (source) {
+    case "stackoverflow":
+      return searchStackOverflow(query);
+    case "mdn":
+      return searchMdn(query);
+    case "hackernews":
+      return searchHackerNews(query);
+    case "github":
+      return searchGitHubRepos(query);
+    case "crates":
+      return lookupCrate(query);
+    case "rubygems":
+      return lookupRubyGem(query);
+    case "go":
+      return lookupGoModule(query);
+    case "registry":
+      return lookupPackage(query);
+    case "wikipedia":
+    default:
+      return searchWikipedia(query);
+  }
+}
+
+async function searchStackOverflow(
+  query: string
+): Promise<readonly WebSearchResult[]> {
+  const { body } = await fetchWithTimeout(
+    "https://api.stackexchange.com/2.3/search/advanced" +
+      `?order=desc&sort=relevance&pagesize=5&site=stackoverflow&q=${encodeURIComponent(query)}`
+  );
+  const data: unknown = JSON.parse(body);
+  const items = (data as { items?: unknown }).items;
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items
+    .map((item): WebSearchResult | undefined => {
+      const record = item as {
+        title?: unknown;
+        link?: unknown;
+        score?: unknown;
+        answer_count?: unknown;
+      };
+      const title = typeof record.title === "string" ? record.title : "";
+      const link = typeof record.link === "string" ? record.link : "";
+      if (!title || !link) {
+        return undefined;
+      }
+      return {
+        title,
+        url: link,
+        description: `Score ${typeof record.score === "number" ? record.score : 0}, ${typeof record.answer_count === "number" ? record.answer_count : 0} answers. Stack Overflow question.`
+      };
+    })
+    .filter((result): result is WebSearchResult => result !== undefined);
+}
+
+async function searchMdn(query: string): Promise<readonly WebSearchResult[]> {
+  const { body } = await fetchWithTimeout(
+    `https://developer.mozilla.org/api/v1/search?q=${encodeURIComponent(query)}&locale=en-US`
+  );
+  const data: unknown = JSON.parse(body);
+  const documents = (data as { documents?: unknown }).documents;
+  if (!Array.isArray(documents)) {
+    return [];
+  }
+  return documents
+    .map((document): WebSearchResult | undefined => {
+      const record = document as {
+        title?: unknown;
+        summary?: unknown;
+        mdn_url?: unknown;
+      };
+      const title = typeof record.title === "string" ? record.title : "";
+      const mdnUrl = typeof record.mdn_url === "string" ? record.mdn_url : "";
+      if (!title || !mdnUrl) {
+        return undefined;
+      }
+      return {
+        title,
+        url: `https://developer.mozilla.org${mdnUrl}`,
+        description:
+          typeof record.summary === "string" ? record.summary : ""
+      };
+    })
+    .filter((result): result is WebSearchResult => result !== undefined);
+}
+
+async function searchHackerNews(
+  query: string
+): Promise<readonly WebSearchResult[]> {
+  const { body } = await fetchWithTimeout(
+    `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=5`
+  );
+  const data: unknown = JSON.parse(body);
+  const hits = (data as { hits?: unknown }).hits;
+  if (!Array.isArray(hits)) {
+    return [];
+  }
+  return hits
+    .map((hit): WebSearchResult | undefined => {
+      const record = hit as {
+        title?: unknown;
+        url?: unknown;
+        objectID?: unknown;
+        points?: unknown;
+        num_comments?: unknown;
+      };
+      const title = typeof record.title === "string" ? record.title : "";
+      const objectID =
+        typeof record.objectID === "string" ? record.objectID : "";
+      if (!title || !objectID) {
+        return undefined;
+      }
+      return {
+        title,
+        url:
+          typeof record.url === "string" && record.url
+            ? record.url
+            : `https://news.ycombinator.com/item?id=${objectID}`,
+        description: `${typeof record.points === "number" ? record.points : 0} points, ${typeof record.num_comments === "number" ? record.num_comments : 0} comments. Hacker News discussion.`
+      };
+    })
+    .filter((result): result is WebSearchResult => result !== undefined);
+}
+
+async function searchGitHubRepos(
+  query: string
+): Promise<readonly WebSearchResult[]> {
+  const { body } = await fetchWithTimeout(
+    `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&per_page=5`
+  );
+  const data: unknown = JSON.parse(body);
+  const items = (data as { items?: unknown }).items;
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items
+    .map((item): WebSearchResult | undefined => {
+      const record = item as {
+        full_name?: unknown;
+        html_url?: unknown;
+        description?: unknown;
+        stargazers_count?: unknown;
+        language?: unknown;
+        license?: { spdx_id?: unknown } | null;
+      };
+      const fullName =
+        typeof record.full_name === "string" ? record.full_name : "";
+      const htmlUrl =
+        typeof record.html_url === "string" ? record.html_url : "";
+      if (!fullName || !htmlUrl) {
+        return undefined;
+      }
+      const license =
+        record.license && typeof record.license.spdx_id === "string"
+          ? record.license.spdx_id
+          : "no license";
+      const description =
+        typeof record.description === "string" ? record.description : "";
+      return {
+        title: fullName,
+        url: htmlUrl,
+        description: `${typeof record.stargazers_count === "number" ? record.stargazers_count : 0} stars, ${typeof record.language === "string" ? record.language : "unknown"} language, ${license}. ${description}`.trim()
+      };
+    })
+    .filter((result): result is WebSearchResult => result !== undefined);
+}
+
+const NODE_RELEASES_URL = "https://nodejs.org/dist/index.json";
+
+async function lookupPackage(
+  name: string
+): Promise<readonly WebSearchResult[]> {
+  const normalized = name.trim().toLowerCase();
+  if (
+    normalized === "node" ||
+    normalized === "node.js" ||
+    normalized === "nodejs"
+  ) {
+    try {
+      const { body } = await fetchWithTimeout(NODE_RELEASES_URL);
+      const releases: unknown = JSON.parse(body);
+      if (!Array.isArray(releases) || releases.length === 0) {
+        return [];
+      }
+      const latest = releases[0] as { version?: unknown } | undefined;
+      const lts = releases.find(
+        (release) =>
+          (release as { lts?: boolean | string }).lts !== false
+      ) as { version?: unknown } | undefined;
+      const versionOf = (release: { version?: unknown } | undefined): string =>
+        typeof release?.version === "string" ? release.version : "";
+      return [
+        {
+          title: `Node.js latest version: ${versionOf(latest)}`,
+          url: "https://nodejs.org/en",
+          description: `Current (latest): ${versionOf(latest)}; latest LTS: ${versionOf(lts)}. Official Node.js releases.`
+        }
+      ];
+    } catch {
+      return [];
+    }
+  }
+
+  try {
+    const { body } = await fetchWithTimeout(
+      `https://registry.npmjs.org/${encodeURIComponent(normalized)}`
+    );
+    const data: unknown = JSON.parse(body);
+    const latest = (data as { "dist-tags"?: { latest?: unknown } })?.[
+      "dist-tags"
+    ]?.latest;
+    if (typeof latest === "string") {
+      return [
+        {
+          title: `npm: ${normalized}@${latest}`,
+          url: `https://www.npmjs.com/package/${encodeURIComponent(normalized)}`,
+          description: `Latest version of the npm package '${normalized}' is ${latest}.`
+        }
+      ];
+    }
+  } catch {
+    // Try PyPI below.
+  }
+
+  try {
+    const { body } = await fetchWithTimeout(
+      `https://pypi.org/pypi/${encodeURIComponent(normalized)}/json`
+    );
+    const data: unknown = JSON.parse(body);
+    const version = (data as { info?: { version?: unknown } }).info?.version;
+    if (typeof version === "string") {
+      return [
+        {
+          title: `PyPI: ${normalized} ${version}`,
+          url: `https://pypi.org/project/${encodeURIComponent(normalized)}/`,
+          description: `Latest version of the Python package '${normalized}' is ${version}.`
+        }
+      ];
+    }
+  } catch {
+    return [];
+  }
+
+  return [];
+}
+
+async function lookupCrate(name: string): Promise<readonly WebSearchResult[]> {
+  try {
+    const { body } = await fetchWithTimeout(
+      `https://crates.io/api/v1/crates/${encodeURIComponent(name.toLowerCase())}`
+    );
+    const data: unknown = JSON.parse(body);
+    const crate = (data as {
+      crate?: {
+        max_stable_version?: unknown;
+        newest_version?: unknown;
+        description?: unknown;
+      };
+    }).crate;
+    const version =
+      typeof crate?.max_stable_version === "string" &&
+      crate.max_stable_version.length > 0
+        ? crate.max_stable_version
+        : typeof crate?.newest_version === "string"
+          ? crate.newest_version
+          : "";
+    if (!version) {
+      return [];
+    }
+    return [
+      {
+        title: `crates.io: ${name.toLowerCase()} ${version}`,
+        url: `https://crates.io/crates/${encodeURIComponent(name.toLowerCase())}`,
+        description:
+          typeof crate?.description === "string"
+            ? crate.description
+            : `Latest version of the Rust crate '${name.toLowerCase()}' is ${version}.`
+      }
+    ];
+  } catch {
+    return [];
+  }
+}
+
+async function lookupRubyGem(
+  name: string
+): Promise<readonly WebSearchResult[]> {
+  try {
+    const { body } = await fetchWithTimeout(
+      `https://rubygems.org/api/v1/gems/${encodeURIComponent(name)}.json`
+    );
+    const data: unknown = JSON.parse(body);
+    const record = data as {
+      name?: unknown;
+      version?: unknown;
+      info?: unknown;
+    };
+    const gemName = typeof record.name === "string" ? record.name : name;
+    const version = typeof record.version === "string" ? record.version : "";
+    if (!version) {
+      return [];
+    }
+    return [
+      {
+        title: `RubyGems: ${gemName} ${version}`,
+        url: `https://rubygems.org/gems/${encodeURIComponent(gemName)}`,
+        description:
+          typeof record.info === "string"
+            ? record.info
+            : `Latest version of the Ruby gem '${gemName}' is ${version}.`
+      }
+    ];
+  } catch {
+    return [];
+  }
+}
+
+function escapeGoModule(modulePath: string): string {
+  return modulePath
+    .split("/")
+    .map((segment) =>
+      segment.replace(/[A-Z!]/g, (character) =>
+        character === "!" ? "!!" : `!${character.toLowerCase()}`
+      )
+    )
+    .join("/");
+}
+
+async function lookupGoModule(
+  modulePath: string
+): Promise<readonly WebSearchResult[]> {
+  try {
+    const escaped = escapeGoModule(modulePath.trim());
+    const { body } = await fetchWithTimeout(
+      `https://proxy.golang.org/${escaped}/@latest`
+    );
+    const data: unknown = JSON.parse(body);
+    const version = (data as { Version?: unknown }).Version;
+    if (typeof version !== "string") {
+      return [];
+    }
+    return [
+      {
+        title: `Go module: ${modulePath.trim()} ${version}`,
+        url: `https://pkg.go.dev/${modulePath.trim()}`,
+        description: `Latest version of the Go module '${modulePath.trim()}' is ${version}.`
+      }
+    ];
+  } catch {
+    return [];
+  }
 }
 
 export function activate(context: vscode.ExtensionContext): void {

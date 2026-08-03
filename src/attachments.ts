@@ -6,6 +6,7 @@ import {
   summarizeCurrentPage
 } from "./editorContext.js";
 import type {
+  AttachmentDisplay,
   AttachmentSummary,
   CurrentPageContext,
   ImageContext
@@ -23,6 +24,33 @@ const IMAGE_MIME_TYPES = new Map([
   [".png", "image/png"],
   [".webp", "image/webp"]
 ]);
+
+function sniffImageMimeType(bytes: Uint8Array): string | undefined {
+  const startsWith = (offset: number, expected: readonly number[]): boolean =>
+    expected.every((byte, index) => bytes[offset + index] === byte);
+
+  // JPEG: FF D8 FF
+  if (startsWith(0, [0xff, 0xd8, 0xff])) {
+    return "image/jpeg";
+  }
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (startsWith(0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
+    return "image/png";
+  }
+  // WebP: RIFF....WEBP
+  if (
+    bytes.length >= 12 &&
+    startsWith(0, [0x52, 0x49, 0x46, 0x46]) &&
+    startsWith(8, [0x57, 0x45, 0x42, 0x50])
+  ) {
+    return "image/webp";
+  }
+  // GIF: GIF8
+  if (startsWith(0, [0x47, 0x49, 0x46, 0x38])) {
+    return "image/gif";
+  }
+  return undefined;
+}
 
 const TEXT_EXTENSIONS = new Set([
   ".c",
@@ -223,14 +251,22 @@ export class AttachmentStore {
 
     for (const attachment of requested) {
       if (attachment.summary.kind === "image") {
-        if (!attachment.uri || !attachment.mimeType) {
+        if (!attachment.uri) {
           continue;
         }
         const bytes = await vscode.workspace.fs.readFile(attachment.uri);
+        // Prefer the MIME type sniffed from the file's magic bytes over the
+        // extension-based guess so renamed or mismatched files are still
+        // sent to Gemini with the correct MIME type.
+        const mimeType =
+          sniffImageMimeType(bytes) ?? attachment.mimeType;
+        if (!mimeType) {
+          continue;
+        }
         images.push({
           data: Buffer.from(bytes).toString("base64"),
           label: attachment.summary.label,
-          mimeType: attachment.mimeType
+          mimeType
         });
         promptSections.push(
           [
@@ -283,6 +319,37 @@ export class AttachmentStore {
     requestedIds.forEach((id) => {
       this.attachments.delete(id);
     });
+  }
+
+  public async displayInfo(
+    requestedIds: readonly string[]
+  ): Promise<readonly AttachmentDisplay[]> {
+    const result: AttachmentDisplay[] = [];
+    for (const id of requestedIds) {
+      const attachment = this.attachments.get(id);
+      if (!attachment) {
+        continue;
+      }
+      if (attachment.summary.kind === "image" && attachment.uri) {
+        const bytes = await vscode.workspace.fs.readFile(attachment.uri);
+        const mimeType = sniffImageMimeType(bytes) ?? attachment.mimeType;
+        if (mimeType) {
+          result.push({
+            id,
+            kind: "image",
+            label: attachment.summary.label,
+            dataUri: `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`
+          });
+          continue;
+        }
+      }
+      result.push({
+        id,
+        kind: attachment.summary.kind,
+        label: attachment.summary.label
+      });
+    }
+    return result;
   }
 
   private assertCapacity(additionalCount: number): void {

@@ -140,37 +140,39 @@ export class LiveSession {
     text: string,
     images: readonly ImageContext[] = []
   ): Promise<boolean> {
-    for (const [index, image] of images.entries()) {
-      if (
-        !this.send({
-          realtimeInput: {
-            video: {
-              data: image.data,
-              mimeType: image.mimeType
-            }
-          }
-        })
-      ) {
-        return false;
-      }
-
-      const isLastImage = index === images.length - 1;
-      await delay(isLastImage ? 250 : 1_050);
-      if (!this.isConnected) {
-        return false;
-      }
+    if (!images.length) {
+      return this.send({ realtimeInput: { text } });
     }
 
-    return this.send({ realtimeInput: { text } });
+    // Attached images are sent together with the text as a single
+    // clientContent turn. Unlike realtimeInput, whose audio/video/text
+    // streams are processed concurrently without ordering guarantees, the
+    // parts of a clientContent turn are committed atomically. Gemini only
+    // starts responding after the whole turn (image + text) has been
+    // ingested, so it cannot answer the text before the image is analyzed.
+    const parts: unknown[] = images.map((image) => ({
+      inlineData: {
+        data: image.data,
+        mimeType: image.mimeType
+      }
+    }));
+    parts.push({ text });
+    return this.send({
+      clientContent: {
+        turns: [
+          {
+            role: "user",
+            parts
+          }
+        ],
+        turnComplete: true
+      }
+    });
   }
 
   public sendToolResponses(
     functionResponses: readonly LiveFunctionResponse[]
   ): boolean {
-    this.onEvent({
-      type: "debug",
-      message: `Sending ${functionResponses.length} tool response${functionResponses.length === 1 ? "" : "s"}: ${functionResponses.map((item) => `${item.name} (${item.id})`).join(", ")}`
-    });
     return this.send(createToolResponsePayload(functionResponses));
   }
 
@@ -286,6 +288,43 @@ export class LiveSession {
                 }
               },
               {
+                name: "fetch_url",
+                description:
+                  "Fetch a web page (GitHub repository, README, article, documentation page, blog post, etc.) shared by the user and return its readable text content. Use this whenever the user shares a link or asks for details about a specific URL. The result contains the page title and extracted text.",
+                parameters: {
+                  type: "OBJECT",
+                  properties: {
+                    url: {
+                      type: "STRING",
+                      description:
+                        "The absolute http(s) URL to fetch."
+                    }
+                  },
+                  required: ["url"]
+                }
+              },
+              {
+                name: "search_web",
+                description:
+                  "Search a specific web source for a topic and return a small list of matching titles and URLs. Choose the source that best fits the question: wikipedia for general topics, people, and movies; stackoverflow for programming questions and errors; mdn for web platform documentation; hackernews for tech news and discussions; github for repositories and projects; registry for the latest version of Node.js, npm packages, or Python packages; crates for Rust crates; rubygems for Ruby gems; and go for Go modules. After results return, call fetch_url on the most relevant URL to read the full content.",
+                parameters: {
+                  type: "OBJECT",
+                  properties: {
+                    query: {
+                      type: "STRING",
+                      description:
+                        "A concise search phrase, package name, or repository name."
+                    },
+                    source: {
+                      type: "STRING",
+                      description:
+                        "The source to search: wikipedia, stackoverflow, mdn, hackernews, github, registry, crates, rubygems, or go. Defaults to wikipedia."
+                    }
+                  },
+                  required: ["query"]
+                }
+              },
+              {
                 name: "render_markdown",
                 description:
                   "Render code, Markdown tables, lists, headings, and detailed visual technical content in the chat panel.",
@@ -316,15 +355,14 @@ export class LiveSession {
           },
           activityHandling: preferences.autoInterrupt
             ? "START_OF_ACTIVITY_INTERRUPTS"
-            : "NO_INTERRUPTION"
+            : "NO_INTERRUPTION",
+          // Attached images are committed as atomic clientContent turns, so
+          // turnCoverage is a safety net for any realtime video frames (for
+          // example future webcam input) arriving just before the text that
+          // starts activity.
+          turnCoverage: "TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO"
         }
       }
     };
   }
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, milliseconds);
-  });
 }

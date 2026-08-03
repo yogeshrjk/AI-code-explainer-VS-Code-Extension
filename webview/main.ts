@@ -40,6 +40,7 @@ import {
   mergeVisualText,
   normalizeMarkdown
 } from "./streaming.js";
+import { lucideIconSvg, type LucideIconName } from "./lucideIcons.js";
 
 interface VsCodeApi {
   postMessage(message: unknown): void;
@@ -78,6 +79,13 @@ interface AttachmentSummary {
   readonly id: string;
   readonly kind: AttachmentKind;
   readonly label: string;
+}
+
+interface AttachmentDisplay {
+  readonly id: string;
+  readonly kind: AttachmentKind;
+  readonly label: string;
+  readonly dataUri?: string;
 }
 
 type ChatRole = "user" | "model";
@@ -127,6 +135,7 @@ interface ServerContent {
         readonly mimeType?: string;
       };
       readonly text?: string;
+      readonly thought?: boolean;
     }[];
   };
   readonly interrupted?: boolean;
@@ -169,6 +178,8 @@ interface HostMessage {
   readonly currentPage?: CurrentPageSummary;
   readonly payload?: unknown;
   readonly message?: string;
+  readonly kind?: string;
+  readonly hasImages?: boolean;
   readonly code?: number;
   readonly reason?: string;
   readonly intentional?: boolean;
@@ -178,6 +189,7 @@ interface HostMessage {
   readonly targetId?: string;
   readonly files?: readonly string[];
   readonly attachments?: readonly AttachmentSummary[];
+  readonly attachmentDisplays?: readonly AttachmentDisplay[];
   readonly chat?: StoredChat;
   readonly chatId?: string;
   readonly chats?: readonly ChatSummary[];
@@ -304,6 +316,7 @@ function requiredElement<T extends HTMLElement>(id: string): T {
 }
 
 const elements = {
+  apiKeyField: requiredElement<HTMLElement>("apiKeyField"),
   apiKeyInput: requiredElement<HTMLInputElement>("apiKeyInput"),
   apiRequiredCard: requiredElement<HTMLElement>("apiRequiredCard"),
   apiStatusDot: requiredElement<HTMLElement>("apiStatusDot"),
@@ -412,7 +425,11 @@ const state = {
   } as Preferences,
   selection: undefined as ContextSummary | undefined,
   currentPage: undefined as CurrentPageSummary | undefined,
-  searchStatuses: new Map<string, HTMLElement>(),
+  activeSearches: 0,
+  analyzingImage: false,
+  answering: false,
+  reasoning: false,
+  activityIndicator: null as HTMLElement | null,
   saveChatTimer: undefined as number | undefined,
   sessionReady: false,
   sessionStartedAt: 0,
@@ -523,6 +540,8 @@ function updateApiStatus(configured: boolean): void {
   elements.apiStatusText.textContent = configured
     ? "Configured securely"
     : "Not configured";
+  elements.apiKeyField.classList.toggle("hidden", configured);
+  elements.saveApiButton.classList.toggle("hidden", configured);
   elements.removeApiButton.classList.toggle("hidden", !configured);
 }
 
@@ -1336,15 +1355,6 @@ async function appendMixedRichContent(
   applyTargetId: string | undefined
 ): Promise<void> {
   const segments = parseRichContent(source);
-  const codeCount = segments.filter((segment) => segment.type === "code").length;
-  const tableCount = segments.filter(
-    (segment) => segment.type === "table"
-  ).length;
-  if (codeCount || tableCount) {
-    pushDebugLog(
-      `Rich parser detected ${codeCount} code block${codeCount === 1 ? "" : "s"} and ${tableCount} table${tableCount === 1 ? "" : "s"}.`
-    );
-  }
 
   for (const segment of segments) {
     if (segment.type === "code") {
@@ -1381,10 +1391,7 @@ async function renderModelMessage(
 ): Promise<void> {
   await scheduleLatestRender(
     message,
-    async (renderVersion) => {
-      pushDebugLog(
-        `Rendering message ${message.id.slice(0, 8)} at version ${renderVersion}.`
-      );
+    async () => {
       const rendered = document.createDocumentFragment();
 
       if (message.spokenText.trim()) {
@@ -1440,9 +1447,6 @@ async function renderModelMessage(
     },
     (rendered, renderVersion) => {
       if (message.renderVersion !== renderVersion) {
-        pushDebugLog(
-          `Rejected stale render ${renderVersion} for message ${message.id.slice(0, 8)}.`
-        );
         return;
       }
       message.content.replaceChildren(rendered);
@@ -1465,7 +1469,7 @@ function finishTranscriptTurn(): void {
 
 function resetTranscriptView(): void {
   elements.transcript
-    .querySelectorAll<HTMLElement>(".message, .workspace-search-status")
+    .querySelectorAll<HTMLElement>(".message, .activity-indicator")
     .forEach((message) => {
       message.remove();
     });
@@ -1473,7 +1477,11 @@ function resetTranscriptView(): void {
   state.currentUserMessage = undefined;
   state.pendingVoiceContext = undefined;
   state.pendingModelApplyTargetId = undefined;
-  state.searchStatuses.clear();
+  state.activeSearches = 0;
+  state.analyzingImage = false;
+  state.answering = false;
+  state.reasoning = false;
+  state.activityIndicator = null;
   state.chatMessages = [];
   state.turns = 0;
   state.suppressNextResponse = false;
@@ -1539,9 +1547,6 @@ function postActiveChat(): void {
       messages: state.chatMessages
     } satisfies StoredChat
   });
-  pushDebugLog(
-    `Queued chat save with ${state.chatMessages.length} message${state.chatMessages.length === 1 ? "" : "s"}.`
-  );
 }
 
 function startNewChat(): void {
@@ -1561,9 +1566,6 @@ function startNewChat(): void {
 }
 
 function restoreChat(chat: StoredChat): void {
-  pushDebugLog(
-    `Restoring chat ${chat.id.slice(0, 8)} with ${chat.messages.length} message${chat.messages.length === 1 ? "" : "s"}.`
-  );
   state.restoringChat = true;
   resetTranscriptView();
   state.activeChatId = chat.id;
@@ -1593,54 +1595,114 @@ function restoreChat(chat: StoredChat): void {
   elements.textInput.focus();
 }
 
-function showWorkspaceSearch(
-  requestId: string | undefined,
-  message: string
-): void {
-  const id = requestId ?? crypto.randomUUID();
-  let status = state.searchStatuses.get(id);
-  if (!status) {
-    status = document.createElement("div");
-    status.className = "workspace-search-status";
-    status.setAttribute("role", "status");
-    elements.transcript.append(status);
-    state.searchStatuses.set(id, status);
+function setActivityIndicator(icon: LucideIconName, label: string): void {
+  let indicator = state.activityIndicator;
+  if (!indicator) {
+    indicator = document.createElement("div");
+    indicator.className = "activity-indicator";
+    indicator.setAttribute("role", "status");
+    state.activityIndicator = indicator;
   }
-  status.dataset["state"] = "searching";
-  status.textContent = message;
+  indicator.innerHTML = `${lucideIconSvg(icon)}<span class="activity-label"></span>`;
+  const labelElement = indicator.querySelector<HTMLElement>(".activity-label");
+  if (labelElement) {
+    labelElement.textContent = label;
+  }
+  // Always move the indicator to the end of the transcript so it sits
+  // directly below the most recent user message.
+  elements.transcript.append(indicator);
+  indicator.classList.add("visible");
   elements.emptyState.classList.add("hidden");
   elements.chatPanel.classList.add("has-transcript");
   scrollTranscriptToBottom();
 }
 
-function completeWorkspaceSearch(
-  requestId: string | undefined,
-  message: string,
-  files: readonly string[] = []
-): void {
-  const status = requestId
-    ? state.searchStatuses.get(requestId)
-    : undefined;
-  if (!status) {
-    showWorkspaceSearch(requestId, message);
+function showActivitySearch(kind: "workspace" | "web" | "reading"): void {
+  state.activeSearches += 1;
+  if (kind === "reading") {
+    setActivityIndicator("book-open", "Reading…");
+  } else {
+    setActivityIndicator(
+      "search",
+      kind === "web"
+        ? "Searching the web…"
+        : "Searching in the workspace…"
+    );
+  }
+}
+
+function completeActivitySearch(): void {
+  state.activeSearches = Math.max(0, state.activeSearches - 1);
+  if (state.activeSearches === 0) {
+    if (state.analyzingImage) {
+      setActivityIndicator("image", "Analyzing image source…");
+    } else if (state.reasoning) {
+      setActivityIndicator("brain", "Reasoning…");
+    } else {
+      setActivityIndicator("lightbulb", "Thinking…");
+    }
+  }
+}
+
+function hideActivityIndicator(): void {
+  state.activeSearches = 0;
+  state.analyzingImage = false;
+  state.answering = false;
+  state.reasoning = false;
+  if (state.activityIndicator) {
+    state.activityIndicator.classList.remove("visible");
+  }
+}
+
+function markAnswering(): void {
+  if (state.answering) {
     return;
   }
-  status.dataset["state"] = "complete";
-  const label = document.createElement("span");
-  label.textContent = message;
-  const fileList = document.createElement("span");
-  fileList.className = "workspace-file-list";
-  for (const file of files) {
-    const fileName = file.split(/[\\/]/u).pop() ?? file;
-    const item = document.createElement("code");
-    item.textContent = fileName;
-    fileList.append(item);
+  state.answering = true;
+  setActivityIndicator("volume-2", "Answering…");
+}
+
+function markReasoning(): void {
+  if (state.reasoning) {
+    return;
   }
-  status.replaceChildren(label);
-  if (files.length) {
-    status.append(fileList);
+  state.reasoning = true;
+  setActivityIndicator("brain", "Reasoning…");
+}
+
+function renderMessageAttachments(
+  message: TranscriptMessage,
+  displays: readonly AttachmentDisplay[]
+): void {
+  if (!displays.length) {
+    return;
   }
-  scrollTranscriptToBottom();
+  const container = document.createElement("div");
+  container.className = "message-attachments";
+  for (const display of displays) {
+    if (display.kind === "image" && display.dataUri) {
+      const image = document.createElement("img");
+      image.className = "message-attachment-image";
+      image.src = display.dataUri;
+      image.alt = display.label;
+      image.title = display.label;
+      container.append(image);
+    } else {
+      const chip = document.createElement("span");
+      chip.className = "message-attachment-chip";
+      chip.title = display.label;
+      const icon = document.createElement("span");
+      icon.className = "message-attachment-chip-icon";
+      icon.innerHTML = lucideIconSvg("file-text", 12);
+      const label = document.createElement("span");
+      label.className = "message-attachment-chip-label";
+      label.textContent = display.label;
+      chip.append(icon, label);
+      container.append(chip);
+    }
+  }
+  // Attachments appear above the typed text.
+  message.content.prepend(container);
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -1865,7 +1927,6 @@ function handleServerMessage(payload: unknown): void {
     state.sessionReady = true;
     state.suppressNextResponse = false;
     state.handledFunctionCallIds.clear();
-    pushDebugLog("Gemini Live setup completed.");
     startTimer();
     updateControls();
     setStatus("Listening", "live");
@@ -1878,20 +1939,6 @@ function handleServerMessage(payload: unknown): void {
   const content = payload.serverContent;
 
   if (content) {
-    // const parts = content.modelTurn?.parts ?? [];
-    // const audioPartCount = parts.filter(
-    //   (part) =>
-    //     Boolean(part.inlineData?.data) &&
-    //     (part.inlineData?.mimeType ?? "audio/pcm").startsWith("audio/pcm")
-    // ).length;
-    // const visualCharacterCount = parts.reduce(
-    //   (total, part) => total + (part.text?.length ?? 0),
-    //   0
-    // );
-    // pushDebugLog(
-    //   `Gemini serverContent: audio=${audioPartCount}, spokenChars=${content.outputTranscription?.text?.length ?? 0}, visualChars=${visualCharacterCount}, complete=${Boolean(content.turnComplete)}, interrupted=${Boolean(content.interrupted)}.`
-    // );
-
     // When the user speaks (voice input) after a stop, clear suppression.
     const userText = content.inputTranscription?.text;
     if (userText) {
@@ -1906,37 +1953,44 @@ function handleServerMessage(payload: unknown): void {
     if (spokenText) {
       // When in suppressed mode, skip this response entirely.
       if (!state.suppressNextResponse) {
+        markAnswering();
         appendSpokenTranscript(spokenText);
       }
     }
 
     for (const part of content.modelTurn?.parts ?? []) {
+      // Internal reasoning/thought parts mean the model is working through
+      // complex logic. Show a reasoning indicator and do not render the
+      // thought text as visible content.
+      if (part.thought === true) {
+        markReasoning();
+        continue;
+      }
       if (
         part.inlineData?.data &&
         (part.inlineData.mimeType ?? "audio/pcm").startsWith("audio/pcm")
       ) {
         // Only queue audio if we are not suppressing this response.
         if (!state.suppressNextResponse) {
+          markAnswering();
           queueOutputAudio(part.inlineData.data);
         }
       }
       // Keep visual model text separate from audio transcription. Mixing
       // these streams breaks Markdown fences when their chunks interleave.
       if (part.text && !state.suppressNextResponse) {
+        markAnswering();
         appendVisualText(part.text);
       }
     }
 
     if (shouldInterruptPlayback(content)) {
-      pushDebugLog("Gemini confirmed interruption; clearing audio playback.");
       stopPlayback();
       setStatus("Listening", "live");
     }
 
     if (content.turnComplete) {
-      pushDebugLog(
-        `Turn complete: spoken=${state.currentModelMessage?.spokenText.length ?? 0}, visual=${state.currentModelMessage?.visualText.length ?? 0}, markdownBlocks=${state.currentModelMessage?.markdownBlocks.length ?? 0}.`
-      );
+      hideActivityIndicator();
       finishTranscriptTurn();
       if (!state.playbackSources.size) {
         setStatus("Listening", "live");
@@ -1953,25 +2007,16 @@ function handleToolCall(toolCall: GeminiToolCall): void {
   for (const functionCall of toolCall.functionCalls ?? []) {
     const functionCallId = functionCall.id?.trim();
     const functionName = functionCall.name?.trim();
-    pushDebugLog(
-      `Gemini tool call: ${functionName ?? "unnamed"} (${functionCallId ?? "missing id"}), argumentKeys=${Object.keys(functionCall.args ?? {}).join(",") || "none"}.`
-    );
 
     if (functionName !== "render_markdown") {
       continue;
     }
 
     if (!functionCallId) {
-      pushDebugLog(
-        "Rejected render_markdown because Gemini did not provide a function-call ID."
-      );
       continue;
     }
 
     if (state.handledFunctionCallIds.has(functionCallId)) {
-      pushDebugLog(
-        `Ignored duplicate render_markdown call (${functionCallId}).`
-      );
       continue;
     }
     state.handledFunctionCallIds.add(functionCallId);
@@ -1981,9 +2026,6 @@ function handleToolCall(toolCall: GeminiToolCall): void {
       typeof markdown === "string"
         ? appendMarkdownBlock(markdown, functionCallId)
         : "invalid";
-    pushDebugLog(
-      `render_markdown ${functionCallId}: ${renderResult}${typeof markdown === "string" ? `, chars=${markdown.length}` : ""}.`
-    );
 
     vscode.postMessage({
       type: "sendToolResponse",
@@ -2096,11 +2138,11 @@ function handleHostMessage(message: HostMessage): void {
       }
       break;
     case "toolResponseStatus":
-      pushDebugLog(
-        message.message ??
-          `${message.functionName ?? "Tool"} response ${message.success ? "sent" : "failed"} (${message.functionCallId ?? "unknown id"}).`
-      );
       if (!message.success) {
+        pushDebugLog(
+          message.message ??
+            `${message.functionName ?? "Tool"} response failed (${message.functionCallId ?? "unknown id"}).`
+        );
         if (message.functionCallId) {
           state.handledFunctionCallIds.delete(message.functionCallId);
         }
@@ -2125,19 +2167,26 @@ function handleHostMessage(message: HostMessage): void {
       elements.muteMicButton.setAttribute("aria-label", "Mute microphone");
       stopTimer();
       cleanupAudio();
+      hideActivityIndicator();
       updateControls();
       if (message.intentional) {
         setStatus("Disconnected");
       } else {
-        const detail =
-          message.reason ||
-          (message.code === 1008
-            ? `Gemini Live rejected the connection (code ${message.code}). Verify the API key, selected model, Live API support, and session configuration.`
-            : `Gemini Live connection closed (code ${message.code ?? "unknown"}).`);
+        const isGoAway =
+          message.code === 1008 &&
+          /goaway|failed to close the connection/i.test(
+            message.reason ?? ""
+          );
+        const detail = isGoAway
+          ? `${message.reason ?? "The live session was closed by the server."} Please try restarting the live session.`
+          : message.reason ||
+            (message.code === 1008
+              ? `Gemini Live rejected the connection (code ${message.code}). Verify the API key, selected model, Live API support, and session configuration.`
+              : `Gemini Live connection closed (code ${message.code ?? "unknown"}).`);
         pushDebugLog(
           `Session closed: code=${message.code ?? "unknown"}, reason=${message.reason ?? "none"}, intentional=${Boolean(message.intentional)}`
         );
-        if (!message.intentional && state.apiConfigured) {
+        if (!message.intentional && state.apiConfigured && !isGoAway) {
           setStatus("Retrying connection...", "busy");
           window.setTimeout(() => {
             if (!state.sessionReady && !state.isConnecting) {
@@ -2159,6 +2208,7 @@ function handleHostMessage(message: HostMessage): void {
       elements.muteMicButton.setAttribute("aria-label", "Mute microphone");
       stopTimer();
       cleanupAudio();
+      hideActivityIndicator();
       updateControls();
       setStatus("Disconnected");
       break;
@@ -2171,6 +2221,10 @@ function handleHostMessage(message: HostMessage): void {
           message.currentPage
         );
         if (state.currentUserMessage) {
+          renderMessageAttachments(
+            state.currentUserMessage,
+            message.attachmentDisplays ?? []
+          );
           state.currentUserMessage.closed = true;
         }
         if (state.currentModelMessage) {
@@ -2183,7 +2237,18 @@ function handleHostMessage(message: HostMessage): void {
         renderCurrentPageAttachment();
         elements.textInput.value = "";
         resizeComposer();
-        setStatus("Thinking", "busy");
+        state.activeSearches = 0;
+        state.answering = false;
+        state.reasoning = false;
+        state.analyzingImage = Boolean(message.hasImages);
+        setActivityIndicator(
+          state.analyzingImage ? "image" : "lightbulb",
+          state.analyzingImage ? "Analyzing image source…" : "Thinking…"
+        );
+        setStatus(
+          state.analyzingImage ? "Analyzing image" : "Thinking",
+          "busy"
+        );
       }
       break;
     case "textRejected":
@@ -2196,18 +2261,24 @@ function handleHostMessage(message: HostMessage): void {
       state.suppressNextResponse = false;
       break;
     case "workspaceSearchStarted":
-      showWorkspaceSearch(
-        message.requestId,
-        message.message ?? "Let me search the workspace and read the code."
+      showActivitySearch(
+        message.kind === "reading"
+          ? "reading"
+          : message.kind === "web"
+            ? "web"
+            : "workspace"
       );
-      setStatus("Searching workspace", "busy");
+      setStatus(
+        message.kind === "reading"
+          ? "Reading file"
+          : message.kind === "web"
+            ? "Searching web"
+            : "Searching workspace",
+        "busy"
+      );
       break;
     case "workspaceSearchCompleted":
-      completeWorkspaceSearch(
-        message.requestId,
-        message.message ?? "Workspace search completed.",
-        message.files ?? []
-      );
+      completeActivitySearch();
       setStatus("Thinking", "busy");
       break;
     case "codeCopied":

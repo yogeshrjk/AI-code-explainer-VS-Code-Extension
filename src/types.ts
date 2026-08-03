@@ -116,6 +116,13 @@ export interface AttachmentSummary {
   readonly label: string;
 }
 
+export interface AttachmentDisplay {
+  readonly id: string;
+  readonly kind: AttachmentKind;
+  readonly label: string;
+  readonly dataUri?: string;
+}
+
 export interface ImageContext {
   readonly data: string;
   readonly label: string;
