@@ -168,6 +168,17 @@ interface GeminiServerMessage {
   readonly toolCall?: GeminiToolCall;
 }
 
+interface ScreenFrame {
+  readonly text: string;
+  readonly languageId: string;
+  readonly fileName: string;
+  readonly relativePath: string;
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly selectionStart?: number;
+  readonly selectionEnd?: number;
+}
+
 interface HostMessage {
   readonly type?: string;
   readonly apiConfigured?: boolean;
@@ -199,6 +210,8 @@ interface HostMessage {
   readonly success?: boolean;
   readonly functionCallId?: string;
   readonly functionName?: string;
+  readonly frame?: ScreenFrame;
+  readonly fromEdit?: boolean;
 }
 
 interface TranscriptMessage {
@@ -321,6 +334,9 @@ const elements = {
   apiRequiredCard: requiredElement<HTMLElement>("apiRequiredCard"),
   apiStatusDot: requiredElement<HTMLElement>("apiStatusDot"),
   apiStatusText: requiredElement<HTMLElement>("apiStatusText"),
+  refreshExtensionButton: requiredElement<HTMLButtonElement>(
+    "refreshExtensionButton"
+  ),
   attachFileButton:
     requiredElement<HTMLButtonElement>("attachFileButton"),
   attachImageButton:
@@ -349,7 +365,6 @@ const elements = {
   emptyState: requiredElement<HTMLElement>("emptyState"),
   emptyHistory: requiredElement<HTMLElement>("emptyHistory"),
   errorBox: requiredElement<HTMLElement>("errorBox"),
-  headerStatus: requiredElement<HTMLElement>("headerStatus"),
   languageSelect: requiredElement<HTMLSelectElement>("languageSelect"),
   historyButton: requiredElement<HTMLButtonElement>("historyButton"),
   historyPanel: requiredElement<HTMLElement>("historyPanel"),
@@ -373,6 +388,10 @@ const elements = {
   sendButton: requiredElement<HTMLButtonElement>("sendButton"),
   sessionButton: requiredElement<HTMLButtonElement>("sessionButton"),
   sessionTimer: requiredElement<HTMLElement>("sessionTimer"),
+  shareScreenButton:
+    requiredElement<HTMLButtonElement>("shareScreenButton"),
+  speakerMuteButton:
+    requiredElement<HTMLButtonElement>("speakerMuteButton"),
   settingsButton: requiredElement<HTMLButtonElement>("settingsButton"),
   settingsFeedback: requiredElement<HTMLElement>("settingsFeedback"),
   settingsPanel: requiredElement<HTMLElement>("settingsPanel"),
@@ -406,6 +425,7 @@ const state = {
   chats: [] as readonly ChatSummary[],
   currentModelMessage: undefined as TranscriptMessage | undefined,
   currentUserMessage: undefined as TranscriptMessage | undefined,
+  editingUserMessageId: undefined as string | undefined,
   handledFunctionCallIds: new Set<string>(),
   isConnecting: false,
   masterGain: undefined as GainNode | undefined,
@@ -433,6 +453,9 @@ const state = {
   saveChatTimer: undefined as number | undefined,
   sessionReady: false,
   sessionStartedAt: 0,
+  screenSharing: false,
+  audioMuted: false,
+  lastRenderedScreenKey: "",
   suppressNextResponse: false,
   timer: undefined as number | undefined,
   turns: 0,
@@ -493,9 +516,7 @@ function setStatus(
   tone: "idle" | "live" | "busy" | "error" = "idle"
 ): void {
   elements.statusLabel.textContent = label;
-  elements.headerStatus.textContent = label;
   elements.statusDot.dataset["tone"] = tone;
-  elements.headerStatus.dataset["tone"] = tone;
 }
 
 function pushDebugLog(message: string): void {
@@ -759,9 +780,23 @@ function updateControls(): void {
     Boolean(state.pendingTextSubmission) ||
     !elements.textInput.value.trim();
 
-  // Show mute/stop buttons only when the session is actively connected.
+  // Show live-session controls only when the session is actively connected.
   elements.muteMicButton.hidden = !state.sessionReady;
+  elements.speakerMuteButton.hidden = !state.sessionReady;
   elements.stopPlaybackButton.hidden = !state.sessionReady;
+  elements.shareScreenButton.hidden = !state.sessionReady;
+  updateShareScreenButton();
+}
+
+function updateControlIcons(): void {
+  elements.muteMicButton.innerHTML = lucideIconSvg(
+    state.micMuted ? "mic-off" : "mic"
+  );
+  elements.speakerMuteButton.innerHTML = lucideIconSvg(
+    state.audioMuted ? "volume-x" : "volume-2"
+  );
+  elements.shareScreenButton.innerHTML = lucideIconSvg("cast");
+  elements.stopPlaybackButton.innerHTML = lucideIconSvg("square");
 }
 
 function startTimer(): void {
@@ -865,7 +900,112 @@ function createMessage(
     contextLabel,
     currentPageLabel
   });
+
+  if (role === "user") {
+    const actions = document.createElement("div");
+    actions.className = "message-actions";
+
+    const copyButton = document.createElement("button");
+    copyButton.type = "button";
+    copyButton.className = "message-action-button";
+    copyButton.title = "Copy question";
+    copyButton.setAttribute("aria-label", "Copy question");
+    copyButton.innerHTML = lucideIconSvg("copy", 12);
+    copyButton.addEventListener("click", () => {
+      copyUserMessage(message, copyButton);
+    });
+
+    const regenerateButton = document.createElement("button");
+    regenerateButton.type = "button";
+    regenerateButton.className = "message-action-button";
+    regenerateButton.title = "Regenerate a more detailed answer";
+    regenerateButton.setAttribute(
+      "aria-label",
+      "Regenerate a more detailed answer"
+    );
+    regenerateButton.innerHTML = lucideIconSvg("refresh-cw", 12);
+    regenerateButton.addEventListener("click", () => {
+      regenerateUserMessage(message);
+    });
+
+    const editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.className = "message-action-button";
+    editButton.title = "Edit question (fix speech transcription)";
+    editButton.setAttribute(
+      "aria-label",
+      "Edit question (fix speech transcription)"
+    );
+    editButton.innerHTML = lucideIconSvg("pencil", 12);
+    editButton.addEventListener("click", () => {
+      beginEditUserMessage(message);
+    });
+
+    actions.append(copyButton, regenerateButton, editButton);
+    wrapper.append(actions);
+  }
+
   return message;
+}
+
+function copyUserMessage(
+  message: TranscriptMessage,
+  button: HTMLButtonElement
+): void {
+  const text = message.spokenText.trim();
+  if (!text) {
+    return;
+  }
+  // Reuse the host clipboard path used by code-action buttons.
+  vscode.postMessage({ type: "copyCode", code: text });
+  button.innerHTML = lucideIconSvg("check", 12);
+  button.title = "Copied";
+  button.setAttribute("aria-label", "Copied");
+  window.setTimeout(() => {
+    button.innerHTML = lucideIconSvg("copy", 12);
+    button.title = "Copy question";
+    button.setAttribute("aria-label", "Copy question");
+  }, 1_200);
+}
+
+function regenerateUserMessage(message: TranscriptMessage): void {
+  const question = message.spokenText.trim();
+  if (!question) {
+    return;
+  }
+
+  state.suppressNextResponse = false;
+  clearError();
+  const requestId = crypto.randomUUID();
+  const chatId = ensureActiveChat(question);
+  const value =
+    "The user wants a more detailed and better answer to their previous question. " +
+    `Previous question: ${question}`;
+
+  if (state.sessionReady) {
+    vscode.postMessage({
+      type: "sendText",
+      requestId,
+      chatId,
+      value,
+      includeCurrentPage: false,
+      currentPageUri: undefined,
+      attachmentIds: [],
+      fromEdit: true
+    });
+    return;
+  }
+
+  state.pendingTextSubmission = {
+    requestId,
+    text: value,
+    chatId,
+    includeCurrentPage: false,
+    currentPageUri: undefined,
+    attachmentIds: []
+  };
+  updateControls();
+  void beginSession();
 }
 
 function appendTranscript(
@@ -903,6 +1043,139 @@ function appendTranscript(
     scheduleChatSave();
     scrollTranscriptToBottom("auto");
   }
+}
+
+function beginEditUserMessage(message: TranscriptMessage): void {
+  if (message.role !== "user" || state.editingUserMessageId === message.id) {
+    return;
+  }
+
+  const content = message.content;
+  const originalText = message.spokenText;
+
+  const editor = document.createElement("div");
+  editor.className = "message-editor";
+
+  const row = document.createElement("div");
+  row.className = "message-edit-row";
+
+  const textarea = document.createElement("textarea");
+  textarea.className = "message-edit-input";
+  textarea.value = originalText;
+  textarea.spellcheck = false;
+  textarea.rows = 2;
+  textarea.setAttribute("aria-label", "Edit your question");
+
+  const sendButton = document.createElement("button");
+  sendButton.type = "button";
+  sendButton.className = "message-edit-send";
+  sendButton.title = "Send corrected question";
+  sendButton.setAttribute("aria-label", "Send corrected question");
+  sendButton.innerHTML = lucideIconSvg("send", 14);
+
+  const cancelEdit = (): void => {
+    content.replaceChildren(document.createTextNode(originalText));
+    message.wrapper.classList.remove("is-editing");
+    state.editingUserMessageId = undefined;
+  };
+
+  const sendEdit = (): void => {
+    const corrected = textarea.value.trim();
+    if (!corrected) {
+      return;
+    }
+    message.spokenText = corrected;
+    content.replaceChildren(document.createTextNode(corrected));
+    message.wrapper.classList.remove("is-editing");
+    state.editingUserMessageId = undefined;
+
+    const storedIndex = state.chatMessages.findIndex(
+      (candidate) => candidate.id === message.id
+    );
+    if (storedIndex >= 0) {
+      const existing = state.chatMessages[storedIndex];
+      if (existing) {
+        state.chatMessages[storedIndex] = {
+          ...existing,
+          spokenText: corrected
+        };
+      }
+    }
+    scheduleChatSave();
+    sendCorrectedQuestion(corrected);
+  };
+
+  sendButton.addEventListener("click", sendEdit);
+  textarea.addEventListener("keydown", (event) => {
+    if (event.isComposing) {
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendEdit();
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      cancelEdit();
+    }
+  });
+  textarea.addEventListener("blur", () => {
+    // Esc handled inside the keydown handler; a click on the send button
+    // first blurs the textarea — defer so the click can fire first.
+    window.setTimeout(() => {
+      if (state.editingUserMessageId === message.id && document.activeElement !== sendButton) {
+        cancelEdit();
+      }
+    }, 120);
+  });
+
+  row.append(textarea, sendButton);
+  editor.append(row);
+
+  state.editingUserMessageId = message.id;
+  content.replaceChildren(editor);
+  message.wrapper.classList.add("is-editing");
+  textarea.focus();
+  // Place cursor at the end so the user can append corrections.
+  textarea.selectionStart = textarea.selectionEnd = textarea.value.length;
+}
+
+function sendCorrectedQuestion(text: string): void {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return;
+  }
+
+  state.suppressNextResponse = false;
+  clearError();
+  const requestId = crypto.randomUUID();
+  const chatId = ensureActiveChat(trimmed);
+
+  if (state.sessionReady) {
+    vscode.postMessage({
+      type: "sendText",
+      requestId,
+      chatId,
+      value: trimmed,
+      includeCurrentPage: false,
+      currentPageUri: undefined,
+      attachmentIds: [],
+      fromEdit: true
+    });
+    return;
+  }
+
+  state.pendingTextSubmission = {
+    requestId,
+    text: trimmed,
+    chatId,
+    includeCurrentPage: false,
+    currentPageUri: undefined,
+    attachmentIds: []
+  };
+  updateControls();
+  void beginSession();
 }
 
 function appendSpokenTranscript(text: string): void {
@@ -1467,6 +1740,19 @@ function finishTranscriptTurn(): void {
   scrollTranscriptToBottom();
 }
 
+function finalizeUserMessage(): void {
+  if (state.currentUserMessage && !state.currentUserMessage.closed) {
+    state.currentUserMessage.closed = true;
+  }
+}
+
+function finalizeModelMessage(): void {
+  if (state.currentModelMessage && !state.currentModelMessage.closed) {
+    state.currentModelMessage.closed = true;
+    void renderModelMessage(state.currentModelMessage);
+  }
+}
+
 function resetTranscriptView(): void {
   elements.transcript
     .querySelectorAll<HTMLElement>(".message, .activity-indicator")
@@ -1766,7 +2052,11 @@ function queueOutputAudio(base64: string): void {
   source.onended = () => {
     state.playbackSources.delete(source);
     source.disconnect();
-    if (!state.playbackSources.size && state.sessionReady) {
+    if (
+      !state.playbackSources.size &&
+      state.sessionReady &&
+      !state.audioMuted
+    ) {
       setStatus("Listening", "live");
     }
   };
@@ -1779,6 +2069,7 @@ function createPlaybackPipeline(): void {
   }
 
   state.masterGain = audioContext.createGain();
+  state.masterGain.gain.value = state.audioMuted ? 0 : 1;
   state.masterGain.connect(audioContext.destination);
   state.analyser = audioContext.createAnalyser();
   state.analyser.fftSize = 256;
@@ -1893,6 +2184,7 @@ function endSession(): void {
   state.sessionReady = false;
   state.suppressNextResponse = false;
   state.micMuted = false;
+  resetScreenSharing();
   elements.muteMicButton.classList.remove("is-muted");
   elements.muteMicButton.title = "Mute microphone";
   elements.muteMicButton.setAttribute("aria-label", "Mute microphone");
@@ -1939,13 +2231,33 @@ function handleServerMessage(payload: unknown): void {
   const content = payload.serverContent;
 
   if (content) {
+    // The server interrupted the previous turn (for example the user spoke
+    // over Gemini or pressed Stop). Commit the partial turn so the next
+    // question starts a fresh transcript bubble instead of merging into the
+    // previous one.
+    if (content.interrupted) {
+      finishTranscriptTurn();
+    }
+
     // When the user speaks (voice input) after a stop, clear suppression.
     const userText = content.inputTranscription?.text;
     if (userText) {
       state.suppressNextResponse = false;
       ensureActiveChat(userText);
+      // A new spoken turn begins here — finalize any partial model answer
+      // from the previous turn so its text does not bleed into this one.
+      finalizeModelMessage();
       appendTranscript("user", userText, state.pendingVoiceContext);
       state.pendingVoiceContext = undefined;
+    }
+
+    // Once the model starts replying, the user's utterance is complete:
+    // freeze it so a later question cannot merge into it.
+    if (
+      content.outputTranscription ||
+      (content.modelTurn?.parts?.length ?? 0) > 0
+    ) {
+      finalizeUserMessage();
     }
 
     // Spoken transcription — the authoritative live caption.
@@ -2047,6 +2359,192 @@ function handleToolCall(toolCall: GeminiToolCall): void {
   }
 }
 
+const SCREEN_SHARE_FONT =
+  '13px "SF Mono", ui-monospace, Menlo, Consolas, "Courier New", monospace';
+
+function updateShareScreenButton(): void {
+  elements.shareScreenButton.classList.toggle(
+    "is-active",
+    state.screenSharing
+  );
+  elements.shareScreenButton.title = state.screenSharing
+    ? "Stop sharing screen"
+    : "Share screen with Gemini";
+  elements.shareScreenButton.setAttribute(
+    "aria-label",
+    elements.shareScreenButton.title
+  );
+}
+
+function resetScreenSharing(): void {
+  state.screenSharing = false;
+  state.lastRenderedScreenKey = "";
+  updateShareScreenButton();
+}
+
+function truncateScreenText(
+  context: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number
+): string {
+  if (context.measureText(text).width <= maxWidth) {
+    return text;
+  }
+  let result = text;
+  while (
+    result.length > 1 &&
+    context.measureText(`${result}…`).width > maxWidth
+  ) {
+    result = result.slice(0, -1);
+  }
+  return `${result}…`;
+}
+
+async function renderScreenFrame(frame: ScreenFrame): Promise<void> {
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return;
+  }
+
+  const frameKey = [
+    frame.startLine,
+    frame.endLine,
+    frame.selectionStart ?? -1,
+    frame.selectionEnd ?? -1,
+    frame.fileName,
+    frame.text.length
+  ].join(":");
+  if (frameKey === state.lastRenderedScreenKey) {
+    return;
+  }
+  state.lastRenderedScreenKey = frameKey;
+
+  context.font = SCREEN_SHARE_FONT;
+  const charWidth = Math.max(6, context.measureText("M").width);
+  const lineHeight = Math.round(charWidth * 1.85);
+  const headerHeight = 30;
+  const maxChars = 120;
+  const maxLines = 120;
+  const gutterWidth =
+    8 + String(Math.max(frame.endLine, 1)).length * charWidth + 16;
+  const rawLines = frame.text.replace(/\t/gu, "  ").split("\n");
+  const shownLines = rawLines.slice(0, maxLines);
+  const canvasWidth = Math.ceil(gutterWidth + maxChars * charWidth + 16);
+  const canvasHeight = headerHeight + shownLines.length * lineHeight + 14;
+
+  canvas.width = canvasWidth;
+  canvas.height = canvasHeight;
+
+  // Editor background.
+  context.fillStyle = "#1e1e1e";
+  context.fillRect(0, 0, canvasWidth, canvasHeight);
+
+  // Header bar with the shared file and a live indicator.
+  context.fillStyle = "#2b2b2b";
+  context.fillRect(0, 0, canvasWidth, headerHeight);
+  context.font =
+    '12px "SF Mono", ui-monospace, Menlo, Consolas, "Courier New", monospace';
+  context.textAlign = "left";
+  const title = frame.fileName
+    ? `${frame.fileName} — ${frame.relativePath}`
+    : "No editor is open — GeminiX screen share";
+  context.fillStyle = "#cccccc";
+  context.fillText(
+    truncateScreenText(context, title, canvasWidth - 96),
+    12,
+    20
+  );
+  context.fillStyle = "#4ec9b0";
+  context.fillText("●", canvasWidth - 72, 20);
+  context.fillStyle = "#9cdcfe";
+  context.fillText("LIVE", canvasWidth - 60, 20);
+
+  // Syntax-highlight the visible code with the Shiki highlighter that is
+  // already loaded for the chat renderer.
+  let tokenLines: ReadonlyArray<
+    ReadonlyArray<{ readonly content: string; readonly color?: string }>
+  > = [];
+  let foreground = "#d4d4d4";
+  try {
+    const highlighter = await highlighterPromise;
+    const requestedLanguage = normalizedLanguage(frame.languageId);
+    const language = highlighter
+      .getLoadedLanguages()
+      .includes(requestedLanguage)
+      ? requestedLanguage
+      : "text";
+    const result = highlighter.codeToTokens(frame.text, {
+      lang: language,
+      theme: "dark-plus"
+    });
+    tokenLines = result.tokens;
+    foreground = result.fg ?? foreground;
+  } catch {
+    tokenLines = [];
+  }
+
+  context.font = SCREEN_SHARE_FONT;
+  const codeTop = headerHeight + 8;
+  for (let index = 0; index < shownLines.length; index += 1) {
+    const lineNumber = frame.startLine + index;
+    const y = codeTop + index * lineHeight + lineHeight;
+
+    // Highlight the selected lines, like the editor's selection background.
+    if (
+      frame.selectionStart !== undefined &&
+      frame.selectionEnd !== undefined &&
+      lineNumber >= frame.selectionStart &&
+      lineNumber <= frame.selectionEnd
+    ) {
+      context.fillStyle = "rgba(38, 79, 120, 0.55)";
+      context.fillRect(
+        gutterWidth,
+        y - lineHeight + 2,
+        canvasWidth - gutterWidth,
+        lineHeight
+      );
+    }
+
+    // Line number gutter.
+    context.fillStyle = "#6e7681";
+    context.textAlign = "right";
+    context.fillText(String(lineNumber), gutterWidth - 8, y);
+
+    // Tokenized code, truncated to the canvas width.
+    context.textAlign = "left";
+    const tokens = tokenLines[index];
+    if (tokens && tokens.length) {
+      let x = gutterWidth + 8;
+      for (const token of tokens) {
+        const maxTokenChars = Math.max(
+          0,
+          Math.floor((canvasWidth - 8 - x) / charWidth)
+        );
+        if (maxTokenChars <= 0) {
+          break;
+        }
+        let content = token.content;
+        if (content.length > maxTokenChars) {
+          content = `${content.slice(0, maxTokenChars - 1)}…`;
+        }
+        context.fillStyle = token.color ?? foreground;
+        context.fillText(content, x, y);
+        x += content.length * charWidth;
+      }
+    }
+  }
+
+  let dataUrl: string;
+  try {
+    dataUrl = canvas.toDataURL("image/jpeg", 0.82);
+  } catch {
+    return;
+  }
+  const data = dataUrl.slice("data:image/jpeg;base64,".length);
+  vscode.postMessage({ type: "sendScreenFrame", data });
+}
+
 function handleHostMessage(message: HostMessage): void {
   switch (message.type) {
     case "initialState":
@@ -2071,6 +2569,7 @@ function handleHostMessage(message: HostMessage): void {
     case "apiRequired":
       updateApiStatus(false);
       state.isConnecting = false;
+      resetScreenSharing();
       cleanupAudio();
       updateControls();
       setActiveTab("settings");
@@ -2157,11 +2656,17 @@ function handleHostMessage(message: HostMessage): void {
       showError(message.message ?? "Gemini connection error.");
       setStatus("Connection error", "error");
       break;
+    case "screenFrame":
+      if (message.frame) {
+        void renderScreenFrame(message.frame);
+      }
+      break;
     case "sessionClosed":
       state.pendingTextSubmission = undefined;
       state.isConnecting = false;
       state.sessionReady = false;
       state.micMuted = false;
+      resetScreenSharing();
       elements.muteMicButton.classList.remove("is-muted");
       elements.muteMicButton.title = "Mute microphone";
       elements.muteMicButton.setAttribute("aria-label", "Mute microphone");
@@ -2172,13 +2677,16 @@ function handleHostMessage(message: HostMessage): void {
       if (message.intentional) {
         setStatus("Disconnected");
       } else {
+        // Gemini sends a GoAway message before ending the connection (for
+        // example at its connection time limit). LiveSession now closes the
+        // socket with a GoAway reason, so that expected close can be told
+        // apart from a genuine policy violation (code 1008).
         const isGoAway =
-          message.code === 1008 &&
           /goaway|failed to close the connection/i.test(
             message.reason ?? ""
           );
         const detail = isGoAway
-          ? `${message.reason ?? "The live session was closed by the server."} Please try restarting the live session.`
+          ? "Gemini closed the live session after its connection time limit. Starting a new session…"
           : message.reason ||
             (message.code === 1008
               ? `Gemini Live rejected the connection (code ${message.code}). Verify the API key, selected model, Live API support, and session configuration.`
@@ -2186,16 +2694,24 @@ function handleHostMessage(message: HostMessage): void {
         pushDebugLog(
           `Session closed: code=${message.code ?? "unknown"}, reason=${message.reason ?? "none"}, intentional=${Boolean(message.intentional)}`
         );
-        if (!message.intentional && state.apiConfigured && !isGoAway) {
-          setStatus("Retrying connection...", "busy");
+        if (state.apiConfigured) {
+          setStatus(
+            isGoAway ? "Reconnecting…" : "Retrying connection...",
+            "busy"
+          );
           window.setTimeout(() => {
             if (!state.sessionReady && !state.isConnecting) {
               void beginSession();
             }
           }, 1500);
         }
-        showError(detail);
-        setStatus("Disconnected", "error");
+        if (isGoAway) {
+          // Expected time-limit close: restart seamlessly, no error flash.
+          setStatus("Reconnecting…", "busy");
+        } else {
+          showError(detail);
+          setStatus("Disconnected", "error");
+        }
       }
       break;
     case "sessionStopped":
@@ -2203,6 +2719,7 @@ function handleHostMessage(message: HostMessage): void {
       state.isConnecting = false;
       state.sessionReady = false;
       state.micMuted = false;
+      resetScreenSharing();
       elements.muteMicButton.classList.remove("is-muted");
       elements.muteMicButton.title = "Mute microphone";
       elements.muteMicButton.setAttribute("aria-label", "Mute microphone");
@@ -2214,12 +2731,16 @@ function handleHostMessage(message: HostMessage): void {
       break;
     case "textAccepted":
       if (message.text) {
-        appendTranscript(
-          "user",
-          message.text,
-          message.context,
-          message.currentPage
-        );
+        // Edit-resends and regenerations reuse the existing question bubble;
+        // only create a new user bubble for a fresh typed message.
+        if (!message.fromEdit) {
+          appendTranscript(
+            "user",
+            message.text,
+            message.context,
+            message.currentPage
+          );
+        }
         if (state.currentUserMessage) {
           renderMessageAttachments(
             state.currentUserMessage,
@@ -2458,6 +2979,12 @@ function drawOrb(now: number): void {
   }
 }
 
+elements.refreshExtensionButton.addEventListener("click", () => {
+  // Note: window.confirm is not supported in VS Code webviews (it throws),
+  // so reload directly.
+  vscode.postMessage({ type: "refreshExtension" });
+});
+
 elements.settingsButton.addEventListener("click", () => {
   setActiveTab("settings");
 });
@@ -2502,6 +3029,7 @@ elements.muteMicButton.addEventListener("click", () => {
     "aria-label",
     elements.muteMicButton.title
   );
+  updateControlIcons();
   vscode.postMessage({
     type: "muteMic",
     muted: state.micMuted
@@ -2512,12 +3040,54 @@ elements.muteMicButton.addEventListener("click", () => {
   }
 });
 
+elements.speakerMuteButton.addEventListener("click", () => {
+  state.audioMuted = !state.audioMuted;
+  elements.speakerMuteButton.classList.toggle("is-muted", state.audioMuted);
+  elements.speakerMuteButton.title = state.audioMuted
+    ? "Unmute Gemini's voice"
+    : "Mute Gemini's voice";
+  elements.speakerMuteButton.setAttribute(
+    "aria-label",
+    elements.speakerMuteButton.title
+  );
+  updateControlIcons();
+  if (state.audioMuted) {
+    stopPlayback();
+  }
+  if (state.masterGain) {
+    state.masterGain.gain.value = state.audioMuted ? 0 : 1;
+  }
+  setStatus(
+    state.audioMuted ? "Voice muted" : "Listening",
+    state.audioMuted ? "idle" : "live"
+  );
+});
+
+elements.shareScreenButton.addEventListener("click", () => {
+  if (!state.sessionReady) {
+    return;
+  }
+  state.screenSharing = !state.screenSharing;
+  updateShareScreenButton();
+  vscode.postMessage({
+    type: "setScreenSharing",
+    enabled: state.screenSharing
+  });
+  setStatus(
+    state.screenSharing ? "Sharing screen" : "Listening",
+    state.screenSharing ? "busy" : "live"
+  );
+});
+
 elements.stopPlaybackButton.addEventListener("click", () => {
   // Stop local playback immediately.
   stopPlayback();
   // Suppress the server's follow-up response so Gemini stays silent
   // until the user speaks again.
   state.suppressNextResponse = true;
+  // Commit the partial answer and close the current turn so the next
+  // question renders as its own bubble instead of merging.
+  finishTranscriptTurn();
   setStatus("Listening", "live");
   // Tell the server to interrupt the current turn.
   vscode.postMessage({ type: "interruptTurn" });
@@ -2672,6 +3242,7 @@ window.addEventListener("beforeunload", () => {
 
 initializeSelects();
 updateControls();
+updateControlIcons();
 sizeOrb();
 window.requestAnimationFrame(drawOrb);
 vscode.postMessage({ type: "ready" });

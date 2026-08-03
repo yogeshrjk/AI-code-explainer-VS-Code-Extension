@@ -12,6 +12,11 @@ const MODEL = "gemini-3.1-flash-live-preview";
 const LIVE_API_ENDPOINT =
   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 
+// The Live API state machine only allows messages after the server has
+// acknowledged the setup message. Anything sent earlier makes the server
+// abort the connection with close code 1008 ("The operation was aborted.").
+const MAX_PENDING_MESSAGES = 100;
+
 export type LiveSessionEvent =
   | { readonly type: "connecting" }
   | { readonly type: "opened" }
@@ -28,6 +33,9 @@ export type LiveSessionEvent =
 export class LiveSession {
   private socket: WebSocket | undefined;
   private intentionalClose = false;
+  private setupComplete = false;
+  private goAwayReceived = false;
+  private readonly pendingMessages: unknown[] = [];
 
   public constructor(
     private readonly onEvent: (event: LiveSessionEvent) => void
@@ -47,6 +55,9 @@ export class LiveSession {
     }
 
     this.intentionalClose = false;
+    this.setupComplete = false;
+    this.goAwayReceived = false;
+    this.pendingMessages.length = 0;
     this.onEvent({ type: "connecting" });
 
     const endpoint = `${LIVE_API_ENDPOINT}?key=${encodeURIComponent(apiKey)}`;
@@ -77,6 +88,7 @@ export class LiveSession {
           jsonText = data.toString("utf8");
         }
         const payload: unknown = JSON.parse(jsonText);
+        this.handleServerPayload(payload);
         this.onEvent({ type: "serverMessage", payload });
       } catch {
         this.onEvent({
@@ -98,6 +110,9 @@ export class LiveSession {
       }
 
       this.socket = undefined;
+      this.setupComplete = false;
+      this.goAwayReceived = false;
+      this.pendingMessages.length = 0;
       this.onEvent({
         type: "closed",
         code,
@@ -125,6 +140,18 @@ export class LiveSession {
       frame.byteLength
     ).toString("base64");
     return this.sendAudio(audio);
+  }
+
+  /** Stream a JPEG screen frame to Gemini as realtime video input. */
+  public sendVideo(base64Image: string): boolean {
+    return this.send({
+      realtimeInput: {
+        video: {
+          data: base64Image,
+          mimeType: "image/jpeg"
+        }
+      }
+    });
   }
 
   public sendText(text: string): boolean {
@@ -180,6 +207,7 @@ export class LiveSession {
     const socket = this.socket;
     this.intentionalClose = true;
     this.socket = undefined;
+    this.pendingMessages.length = 0;
 
     if (
       socket &&
@@ -199,8 +227,33 @@ export class LiveSession {
       return false;
     }
 
+    if (this.goAwayReceived) {
+      // The server asked the client to stop sending before it closes the
+      // connection. Sending more would make it terminate as ABORTED.
+      return false;
+    }
+
+    if (!this.setupComplete) {
+      if (this.isRealtimeInput(payload)) {
+        // Real-time audio/text captured before the session is ready is
+        // transient. Replaying it after setup would feed the model stale
+        // input, so drop it instead of queueing it.
+        return true;
+      }
+      // Defer discrete messages (clientContent turns, tool responses) until
+      // the server acknowledges setup, then flush them in order.
+      if (this.pendingMessages.length < MAX_PENDING_MESSAGES) {
+        this.pendingMessages.push(payload);
+      }
+      return true;
+    }
+
+    return this.sendNow(payload);
+  }
+
+  private sendNow(payload: unknown): boolean {
     try {
-      this.socket.send(JSON.stringify(payload), (error) => {
+      this.socket?.send(JSON.stringify(payload), (error) => {
         if (error) {
           this.onEvent({
             type: "error",
@@ -219,6 +272,60 @@ export class LiveSession {
       });
       return false;
     }
+  }
+
+  private handleServerPayload(payload: unknown): void {
+    if (typeof payload !== "object" || payload === null) {
+      return;
+    }
+
+    const message = payload as Readonly<Record<string, unknown>>;
+    if (message.setupComplete !== undefined) {
+      // The Live API requires clients to wait for setupComplete before
+      // sending anything other than the initial setup message. Sending
+      // earlier makes the server abort the connection with code 1008
+      // ("The operation was aborted.").
+      this.setupComplete = true;
+      this.flushPendingMessages();
+      return;
+    }
+
+    if (message.goAway !== undefined) {
+      this.handleGoAway();
+    }
+  }
+
+  private handleGoAway(): void {
+    // The server notifies the client before ending the connection. If the
+    // client keeps sending instead of closing, the server terminates the
+    // connection as ABORTED (WebSocket close code 1008, "The operation was
+    // aborted."). Stop sending and close gracefully so the session ends
+    // with a clean close instead of a policy violation.
+    this.goAwayReceived = true;
+    this.pendingMessages.length = 0;
+    const socket = this.socket;
+    if (
+      socket &&
+      (socket.readyState === WebSocket.OPEN ||
+        socket.readyState === WebSocket.CONNECTING)
+    ) {
+      socket.close(1000, "Gemini closed the session (GoAway)");
+    }
+  }
+
+  private flushPendingMessages(): void {
+    const pending = this.pendingMessages.splice(0);
+    for (const payload of pending) {
+      this.sendNow(payload);
+    }
+  }
+
+  private isRealtimeInput(payload: unknown): boolean {
+    return (
+      typeof payload === "object" &&
+      payload !== null &&
+      "realtimeInput" in (payload as Readonly<Record<string, unknown>>)
+    );
   }
 
   private createSetupMessage(preferences: Preferences): unknown {

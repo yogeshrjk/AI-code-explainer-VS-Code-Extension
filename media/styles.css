@@ -288,24 +288,39 @@ textarea:focus-visible {
   min-width: 0;
 }
 
-.status-actions {
-  display: inline-flex;
+.live-controls {
+  display: flex;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 10px;
 }
 
-.status-actions .icon-button {
-  width: 22px;
-  height: 22px;
+.control-button {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--muted) 28%, transparent);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--vscode-icon-foreground, var(--vscode-foreground));
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
 }
 
-.status-actions .icon-button svg {
-  width: 14px;
-  height: 14px;
+.control-button:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  border-color: color-mix(in srgb, var(--muted) 45%, transparent);
 }
 
-.status-actions .session-timer {
-  margin-left: auto;
+.control-button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
 }
 
 .status-dot,
@@ -392,15 +407,15 @@ textarea:focus-visible {
   min-width: 0;
 }
 
-#muteMicButton svg .mute-slash {
-  opacity: 0;
-  transition: opacity 120ms ease;
+#muteMicButton.is-muted,
+#speakerMuteButton.is-muted {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
 }
-#muteMicButton.is-muted svg .mute-slash {
-  opacity: 1;
-}
-#muteMicButton.is-muted svg path:not(.mute-slash) {
-  opacity: 0.42;
+
+#shareScreenButton.is-active {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 35%, transparent);
 }
 
 .primary-button.compact,
@@ -580,6 +595,133 @@ button:disabled {
 
 .message.model .message-content {
   white-space: normal;
+}
+
+/* User question editing (fix mis-heard speech transcriptions). */
+.message.user {
+  flex-wrap: wrap;
+}
+
+.message-actions {
+  flex-basis: 100%;
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 2px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.message.user:hover .message-actions,
+.message.user:focus-within .message-actions {
+  opacity: 1;
+}
+
+.message-action-button {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.message-action-button:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  color: var(--vscode-foreground);
+}
+
+.message-action-button svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+}
+
+.message-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.message-edit-row {
+  position: relative;
+}
+
+.message-edit-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 56px;
+  padding: 6px 36px 6px 8px;
+  border: 1px solid
+    var(
+      --vscode-input-border,
+      color-mix(in srgb, var(--muted) 40%, transparent)
+    );
+  border-radius: 5px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.message-edit-input:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.message-edit-send {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.message-edit-send:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  color: var(--vscode-foreground);
+}
+
+.message-edit-send svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+}
+
+.message-reask {
+  display: block;
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 10px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.message-reask:hover {
+  color: var(--vscode-foreground);
+}
+
+.message-reask:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .rendered-text {
@@ -1570,6 +1712,7 @@ body.vscode-high-contrast .shiki span {
 }
 
 .has-transcript .status-line,
+.has-transcript .live-controls,
 .has-transcript .mic-track,
 .has-transcript .session-actions {
   grid-column: 2;
@@ -1584,18 +1727,19 @@ body.vscode-high-contrast .shiki span {
   font-size: 10px;
 }
 
-.has-transcript .status-actions .icon-button {
-  width: 20px;
-  height: 20px;
+.has-transcript .live-controls {
+  margin: 3px 0 1px;
+  gap: 4px;
 }
 
-.has-transcript .status-actions .icon-button svg {
-  width: 13px;
-  height: 13px;
+.has-transcript .control-button {
+  width: 22px;
+  height: 22px;
 }
 
-.has-transcript .status-actions .session-timer {
-  font-size: 9px;
+.has-transcript .control-button svg {
+  width: 14px;
+  height: 14px;
 }
 
 @media (max-height: 560px) {

@@ -6,12 +6,12 @@ import {
   captureEditorContext,
   captureCurrentPageContext,
   summarizeCurrentPage,
-  summarizeEditorContext
+  summarizeEditorContext,
 } from "./editorContext.js";
 import {
   LiveSession,
   type LiveFunctionResponse,
-  type LiveSessionEvent
+  type LiveSessionEvent,
 } from "./liveSession.js";
 import { isLiveFunctionResponse } from "./liveProtocol.js";
 import { MicrophoneCapture } from "./microphoneCapture.js";
@@ -19,14 +19,10 @@ import {
   buildConversationHistoryPrompt,
   buildEditorContextPrompt,
   buildTextPrompt,
-  buildWorkspaceContextPrompt
+  buildWorkspaceContextPrompt,
 } from "./prompts.js";
 import { readPreferences, savePreferences } from "./preferences.js";
-import type {
-  EditorContext,
-  Preferences,
-  StoredChat
-} from "./types.js";
+import type { EditorContext, Preferences, StoredChat } from "./types.js";
 import { WorkspaceContextRetriever } from "./workspaceContext.js";
 
 const API_KEY_SECRET = "liveline.geminiApiKey";
@@ -47,6 +43,9 @@ interface WebviewMessage {
   readonly attachmentIds?: readonly string[];
   readonly preferences?: Preferences;
   readonly functionResponse?: unknown;
+  readonly enabled?: boolean;
+  readonly data?: string;
+  readonly fromEdit?: boolean;
 }
 
 interface ApplyTarget {
@@ -59,6 +58,17 @@ interface LiveToolFunctionCall {
   readonly id?: string;
   readonly name?: string;
   readonly args?: Readonly<Record<string, unknown>>;
+}
+
+interface ScreenFrame {
+  readonly text: string;
+  readonly languageId: string;
+  readonly fileName: string;
+  readonly relativePath: string;
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly selectionStart?: number;
+  readonly selectionEnd?: number;
 }
 
 const MAX_APPLY_TARGETS = 20;
@@ -80,11 +90,14 @@ class GeminiXViewProvider
   private turnPrimaryContext: EditorContext | undefined;
   private workspaceToolCallsThisTurn = 0;
   private micMuted = false;
+  private screenShareTimer: NodeJS.Timeout | undefined;
+  private lastScreenFrameKey = "";
+  private sessionHistorySeeded = false;
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly secrets: vscode.SecretStorage,
-    globalStorageUri: vscode.Uri
+    globalStorageUri: vscode.Uri,
   ) {
     this.chatHistory = new ChatHistoryStore(globalStorageUri);
     this.disposables.push(
@@ -106,10 +119,10 @@ class GeminiXViewProvider
         if (event.affectsConfiguration("liveline")) {
           this.post({
             type: "preferences",
-            preferences: readPreferences()
+            preferences: readPreferences(),
           });
         }
-      })
+      }),
     );
   }
 
@@ -119,18 +132,18 @@ class GeminiXViewProvider
 
     view.webview.options = {
       enableScripts: true,
-      localResourceRoots: [distributionUri]
+      localResourceRoots: [distributionUri],
     };
     view.webview.html = this.getHtml(view.webview);
 
     this.disposables.push(
       view.webview.onDidReceiveMessage((message: WebviewMessage) =>
-        this.handleMessage(message)
+        this.handleMessage(message),
       ),
       view.onDidDispose(() => {
         this.disposeLiveResources();
         this.view = undefined;
-      })
+      }),
     );
   }
 
@@ -140,7 +153,7 @@ class GeminiXViewProvider
       password: true,
       placeHolder: "AIza...",
       prompt: "Enter your Google AI Studio Gemini API key",
-      title: "Configure GeminiX"
+      title: "Configure GeminiX",
     });
 
     if (apiKey === undefined) {
@@ -148,13 +161,17 @@ class GeminiXViewProvider
     }
 
     if (!apiKey.trim()) {
-      void vscode.window.showErrorMessage("The Gemini API key cannot be empty.");
+      void vscode.window.showErrorMessage(
+        "The Gemini API key cannot be empty.",
+      );
       return;
     }
 
     await this.secrets.store(API_KEY_SECRET, apiKey.trim());
     await this.postApiStatus();
-    void vscode.window.showInformationMessage("GeminiX API key saved securely.");
+    void vscode.window.showInformationMessage(
+      "GeminiX API key saved securely.",
+    );
   }
 
   public dispose(): void {
@@ -193,7 +210,8 @@ class GeminiXViewProvider
             message.chatId,
             message.includeCurrentPage,
             message.currentPageUri,
-            message.attachmentIds
+            message.attachmentIds,
+            message.fromEdit
           );
           break;
         case "pickFileAttachments":
@@ -221,7 +239,7 @@ class GeminiXViewProvider
           await this.applyPatch(
             message.code,
             message.targetId,
-            message.actionId
+            message.actionId,
           );
           break;
         case "muteMic":
@@ -229,7 +247,7 @@ class GeminiXViewProvider
           this.post({
             type: "micMuted",
             muted: this.micMuted,
-            level: this.micMuted ? 0 : undefined
+            level: this.micMuted ? 0 : undefined,
           });
           break;
         case "interruptTurn":
@@ -238,6 +256,15 @@ class GeminiXViewProvider
         case "sendToolResponse":
           this.sendToolResponse(message.functionResponse);
           break;
+        case "setScreenSharing":
+          this.setScreenSharing(Boolean(message.enabled));
+          break;
+        case "sendScreenFrame":
+          this.sendScreenFrame(message.data);
+          break;
+        case "refreshExtension":
+          this.refreshExtension();
+          break;
       }
     } catch (error) {
       this.post({
@@ -245,7 +272,7 @@ class GeminiXViewProvider
         message:
           error instanceof Error
             ? error.message
-            : "GeminiX could not continue."
+            : "GeminiX could not continue.",
       });
     }
   }
@@ -259,7 +286,7 @@ class GeminiXViewProvider
       selection: summarizeEditorContext(captureEditorContext()),
       currentPage: summarizeCurrentPage(captureCurrentPageContext()),
       attachments: this.attachmentStore.list(),
-      chats: await this.chatHistory.list()
+      chats: await this.chatHistory.list(),
     });
   }
 
@@ -280,7 +307,7 @@ class GeminiXViewProvider
   }
 
   private async updatePreferences(
-    preferences: Preferences | undefined
+    preferences: Preferences | undefined,
   ): Promise<void> {
     if (!preferences) {
       throw new Error("GeminiX settings were not provided.");
@@ -289,7 +316,7 @@ class GeminiXViewProvider
     const savedPreferences = await savePreferences(preferences);
     this.post({
       type: "preferencesSaved",
-      preferences: savedPreferences
+      preferences: savedPreferences,
     });
   }
 
@@ -301,6 +328,7 @@ class GeminiXViewProvider
     }
 
     this.disposeLiveResources();
+    this.sessionHistorySeeded = false;
     this.session = new LiveSession((event) => {
       this.handleSessionEvent(event);
     });
@@ -320,7 +348,7 @@ class GeminiXViewProvider
       onError: (message) => {
         this.post({ type: "sessionError", message });
         this.stopSession();
-      }
+      },
     });
 
     try {
@@ -331,7 +359,7 @@ class GeminiXViewProvider
       throw new Error(
         error instanceof Error
           ? `Could not open the default microphone: ${error.message}`
-          : "Could not open the default microphone."
+          : "Could not open the default microphone.",
       );
     }
   }
@@ -341,20 +369,104 @@ class GeminiXViewProvider
     this.post({ type: "sessionStopped" });
   }
 
+  private setScreenSharing(enabled: boolean): void {
+    if (enabled) {
+      if (this.screenShareTimer) {
+        return;
+      }
+      // Send the first frame immediately, then keep the visible editor in
+      // sync at roughly the Live API video rate (images at <= 1 FPS).
+      this.captureScreenFrame();
+      this.screenShareTimer = setInterval(() => {
+        this.captureScreenFrame();
+      }, 1_000);
+    } else {
+      this.stopScreenSharing();
+    }
+  }
+
+  private sendScreenFrame(data: string | undefined): void {
+    const session = this.session;
+    if (!data || !session?.isConnected) {
+      return;
+    }
+    session.sendVideo(data);
+  }
+
+  private captureScreenFrame(): void {
+    const editor = vscode.window.activeTextEditor;
+    const document = editor?.document;
+    if (!editor || !document) {
+      this.postScreenFrame({
+        text: "",
+        languageId: "text",
+        fileName: "",
+        relativePath: "No editor is open",
+        startLine: 0,
+        endLine: 0,
+      });
+      return;
+    }
+
+    const range = editor.visibleRanges[0] ?? new vscode.Range(0, 0, 0, 0);
+    const selection = editor.selection;
+    const startLine = range.start.line + 1;
+    const endLine = range.end.line + 1;
+    const frame: ScreenFrame = {
+      text: document.getText(range),
+      languageId: document.languageId,
+      fileName: displayFileName(document.fileName),
+      relativePath: vscode.workspace.asRelativePath(document.uri, false),
+      startLine,
+      endLine,
+      selectionStart: Math.max(selection.start.line + 1, startLine),
+      selectionEnd: Math.min(selection.end.line + 1, endLine),
+    };
+
+    // Only publish frames whose visible content actually changed, so we do
+    // not re-encode and re-upload identical screenshots every second.
+    const key = [
+      document.uri.toString(),
+      startLine,
+      endLine,
+      frame.text.length,
+      frame.selectionStart ?? -1,
+      frame.selectionEnd ?? -1,
+    ].join(":");
+    if (key === this.lastScreenFrameKey) {
+      return;
+    }
+    this.lastScreenFrameKey = key;
+    this.postScreenFrame(frame);
+  }
+
+  private postScreenFrame(frame: ScreenFrame): void {
+    this.post({ type: "screenFrame", frame });
+  }
+
+  private stopScreenSharing(): void {
+    if (this.screenShareTimer) {
+      clearInterval(this.screenShareTimer);
+      this.screenShareTimer = undefined;
+    }
+    this.lastScreenFrameKey = "";
+  }
+
   private async sendText(
     text: string | undefined,
     requestId: string | undefined,
     chatId: string | undefined,
     includeCurrentPage: boolean | undefined,
     currentPageUri: string | undefined,
-    attachmentIds: readonly string[] | undefined
+    attachmentIds: readonly string[] | undefined,
+    fromEdit: boolean | undefined,
   ): Promise<void> {
     const userText = text?.trim();
     if (!userText || !this.session?.isConnected) {
       this.post({
         type: "textRejected",
         requestId,
-        message: "Start a live session before sending a message."
+        message: "Start a live session before sending a message.",
       });
       return;
     }
@@ -368,11 +480,11 @@ class GeminiXViewProvider
     this.workspaceToolCallsThisTurn = 0;
     const requestedAttachmentIds = attachmentIds ?? [];
     const preparedAttachments = await this.attachmentStore.prepare(
-      requestedAttachmentIds
+      requestedAttachmentIds,
     );
 
     const displayAttachments = await this.attachmentStore.displayInfo(
-      requestedAttachmentIds
+      requestedAttachmentIds,
     );
     this.post({
       type: "textAccepted",
@@ -383,7 +495,8 @@ class GeminiXViewProvider
       applyTargetId,
       attachments: requestedAttachmentIds,
       attachmentDisplays: displayAttachments,
-      hasImages: preparedAttachments.images.length > 0
+      hasImages: preparedAttachments.images.length > 0,
+      fromEdit
     });
 
     const announceSearch = shouldAnnounceWorkspaceSearch(userText);
@@ -392,28 +505,37 @@ class GeminiXViewProvider
         type: "workspaceSearchStarted",
         requestId,
         kind: "workspace",
-        message: "Let me search the workspace and read the relevant code."
+        message: "Let me search the workspace and read the relevant code.",
       });
     }
 
     const workspaceContext = await this.workspaceContextRetriever.retrieve(
       userText,
-      context
+      context,
     );
     if (announceSearch) {
       this.postWorkspaceSearchCompleted(requestId, workspaceContext);
     }
 
-    const conversationPrompt = buildConversationHistoryPrompt(
-      await this.chatHistory.conversationContext(chatId)
-    );
+    // The Live session is stateful: Gemini already remembers everything said
+    // in the current session. Resending the full history on every typed
+    // question bloats the context (which makes the model repeat itself) and
+    // burns API quota. Seed the history only once, on the first user turn of
+    // a session, and only when the chat is a restored one with prior messages.
+    const isFirstSessionTurn = !this.sessionHistorySeeded;
+    this.sessionHistorySeeded = true;
+    const conversation = await this.chatHistory.conversationContext(chatId);
+    const conversationPrompt =
+      isFirstSessionTurn && conversation.length > 0
+        ? buildConversationHistoryPrompt(conversation)
+        : "";
     const prompt = buildTextPrompt(
       userText,
       context,
       currentPageContext,
       workspaceContext,
       preparedAttachments.prompt,
-      conversationPrompt
+      conversationPrompt,
     );
     const session = this.session;
     if (
@@ -423,7 +545,7 @@ class GeminiXViewProvider
       this.post({
         type: "textRejected",
         requestId,
-        message: "The message could not be sent."
+        message: "The message could not be sent.",
       });
       return;
     }
@@ -432,22 +554,18 @@ class GeminiXViewProvider
     this.postAttachmentState();
   }
 
-  private sendToolResponse(
-    functionResponse: unknown
-  ): void {
+  private sendToolResponse(functionResponse: unknown): void {
     if (!isLiveFunctionResponse(functionResponse)) {
       this.post({
         type: "toolResponseStatus",
         success: false,
-        message: "Rejected an invalid Gemini tool-response payload."
+        message: "Rejected an invalid Gemini tool-response payload.",
       });
       return;
     }
 
     const session = this.session;
-    const sent = Boolean(
-      session?.sendToolResponses([functionResponse])
-    );
+    const sent = Boolean(session?.sendToolResponses([functionResponse]));
     this.post({
       type: "toolResponseStatus",
       functionCallId: functionResponse.id,
@@ -455,7 +573,7 @@ class GeminiXViewProvider
       success: sent,
       message: sent
         ? `Sent ${functionResponse.name} response (${functionResponse.id}).`
-        : `Could not send ${functionResponse.name} response because the Gemini session is not connected.`
+        : `Could not send ${functionResponse.name} response because the Gemini session is not connected.`,
     });
   }
 
@@ -491,7 +609,7 @@ class GeminiXViewProvider
     this.post({
       type: "chatSaved",
       chatId: saved.id,
-      chats: await this.chatHistory.list()
+      chats: await this.chatHistory.list(),
     });
   }
 
@@ -502,7 +620,7 @@ class GeminiXViewProvider
 
     this.post({
       type: "chatLoaded",
-      chat: await this.chatHistory.read(chatId)
+      chat: await this.chatHistory.read(chatId),
     });
   }
 
@@ -514,7 +632,7 @@ class GeminiXViewProvider
     const confirmation = await vscode.window.showWarningMessage(
       "Delete this saved GeminiX chat? This cannot be undone.",
       { modal: true },
-      "Delete"
+      "Delete",
     );
     if (confirmation !== "Delete") {
       return;
@@ -524,7 +642,7 @@ class GeminiXViewProvider
     this.post({
       type: "chatDeleted",
       chatId,
-      chats: await this.chatHistory.list()
+      chats: await this.chatHistory.list(),
     });
   }
 
@@ -536,7 +654,7 @@ class GeminiXViewProvider
     if (context && session?.isConnected) {
       const workspaceContext = await this.workspaceContextRetriever.retrieve(
         "",
-        context
+        context,
       );
       if (session !== this.session || !this.session.isConnected) {
         return;
@@ -547,17 +665,17 @@ class GeminiXViewProvider
         [
           buildEditorContextPrompt(context),
           workspacePrompt,
-          "The user is now asking a voice question about this context."
+          "The user is now asking a voice question about this context.",
         ]
           .filter(Boolean)
-          .join("\n\n")
+          .join("\n\n"),
       );
     }
 
     this.post({
       type: "voiceContext",
       context: summarizeEditorContext(context),
-      applyTargetId: this.registerApplyTarget(context)
+      applyTargetId: this.registerApplyTarget(context),
     });
   }
 
@@ -580,6 +698,7 @@ class GeminiXViewProvider
         this.post({ type: "sessionError", message: event.message });
         break;
       case "closed":
+        this.stopScreenSharing();
         this.microphone?.dispose();
         this.microphone = undefined;
         this.session = undefined;
@@ -587,13 +706,14 @@ class GeminiXViewProvider
           type: "sessionClosed",
           code: event.code,
           reason: event.reason,
-          intentional: event.intentional
+          intentional: event.intentional,
         });
         break;
     }
   }
 
   private disposeLiveResources(): void {
+    this.stopScreenSharing();
     this.microphone?.dispose();
     this.microphone = undefined;
     this.session?.dispose();
@@ -603,20 +723,24 @@ class GeminiXViewProvider
   private async postApiStatus(): Promise<void> {
     this.post({
       type: "apiStatus",
-      configured: Boolean(await this.secrets.get(API_KEY_SECRET))
+      configured: Boolean(await this.secrets.get(API_KEY_SECRET)),
     });
+  }
+
+  private refreshExtension(): void {
+    vscode.commands.executeCommand("workbench.action.reloadWindow");
   }
 
   private postEditorContextState(): void {
     this.post({
       type: "selectionChanged",
       selection: summarizeEditorContext(captureEditorContext()),
-      currentPage: summarizeCurrentPage(captureCurrentPageContext())
+      currentPage: summarizeCurrentPage(captureCurrentPageContext()),
     });
   }
 
   private registerApplyTarget(
-    context: EditorContext | undefined
+    context: EditorContext | undefined,
   ): string | undefined {
     if (!context) {
       return undefined;
@@ -629,9 +753,9 @@ class GeminiXViewProvider
         context.startLineIndex,
         context.startCharacter,
         context.endLineIndex,
-        context.endCharacter
+        context.endCharacter,
       ),
-      originalText: context.text
+      originalText: context.text,
     });
 
     while (this.applyTargets.size > MAX_APPLY_TARGETS) {
@@ -646,7 +770,7 @@ class GeminiXViewProvider
 
   private async copyCode(
     code: string | undefined,
-    actionId: string | undefined
+    actionId: string | undefined,
   ): Promise<void> {
     if (code === undefined) {
       throw new Error("No code was provided to copy.");
@@ -659,7 +783,7 @@ class GeminiXViewProvider
   private async applyPatch(
     code: string | undefined,
     targetId: string | undefined,
-    actionId: string | undefined
+    actionId: string | undefined,
   ): Promise<void> {
     if (code === undefined || code.length > MAX_PATCH_CHARACTERS) {
       throw new Error("The returned code is empty or too large to apply.");
@@ -671,7 +795,7 @@ class GeminiXViewProvider
         ? {
             uri: activeEditor.document.uri,
             range: activeEditor.selection,
-            originalText: activeEditor.document.getText(activeEditor.selection)
+            originalText: activeEditor.document.getText(activeEditor.selection),
           }
         : undefined;
     const capturedTarget = targetId
@@ -680,7 +804,7 @@ class GeminiXViewProvider
     const target = activeSelection ?? capturedTarget;
     if (!target) {
       throw new Error(
-        "Select the code you want to replace in the active editor, then click Apply again."
+        "Select the code you want to replace in the active editor, then click Apply again.",
       );
     }
 
@@ -690,7 +814,7 @@ class GeminiXViewProvider
       document.getText(target.range) !== target.originalText
     ) {
       throw new Error(
-        "The selected code changed after the answer was generated. Select it again before applying."
+        "The selected code changed after the answer was generated. Select it again before applying.",
       );
     }
 
@@ -710,7 +834,7 @@ class GeminiXViewProvider
     }
     this.post({ type: "patchApplied", actionId, targetId });
     void vscode.window.showInformationMessage(
-      `GeminiX applied the code to ${vscode.workspace.asRelativePath(target.uri, false)}.`
+      `GeminiX applied the code to ${vscode.workspace.asRelativePath(target.uri, false)}.`,
     );
   }
 
@@ -735,16 +859,15 @@ class GeminiXViewProvider
       }
 
       if (
-        this.workspaceToolCallsThisTurn >=
-        MAX_WORKSPACE_TOOL_CALLS_PER_TURN
+        this.workspaceToolCallsThisTurn >= MAX_WORKSPACE_TOOL_CALLS_PER_TURN
       ) {
         responses.push({
           id,
           name,
           response: {
             error:
-              "Workspace tool limit reached for this turn. Answer from the evidence already returned."
-          }
+              "Workspace tool limit reached for this turn. Answer from the evidence already returned.",
+          },
         });
         continue;
       }
@@ -756,7 +879,7 @@ class GeminiXViewProvider
           responses.push({
             id,
             name,
-            response: { error: "A non-empty search query is required." }
+            response: { error: "A non-empty search query is required." },
           });
           continue;
         }
@@ -765,13 +888,13 @@ class GeminiXViewProvider
           type: "workspaceSearchStarted",
           requestId: id,
           kind: "workspace",
-          message: `Let me search the workspace for ${query}.`
+          message: `Let me search the workspace for ${query}.`,
         });
         try {
           const workspaceContext =
             await this.workspaceContextRetriever.retrieve(
               query,
-              this.turnPrimaryContext
+              this.turnPrimaryContext,
             );
           this.postWorkspaceSearchCompleted(id, workspaceContext);
           responses.push({
@@ -784,8 +907,8 @@ class GeminiXViewProvider
               truncated: workspaceContext.truncated,
               message: workspaceContext.snippets.length
                 ? "Workspace code was found and read."
-                : "No matching workspace code was found."
-            }
+                : "No matching workspace code was found.",
+            },
           });
         } catch (error) {
           responses.push({
@@ -795,8 +918,8 @@ class GeminiXViewProvider
               error:
                 error instanceof Error
                   ? error.message
-                  : "The workspace search failed."
-            }
+                  : "The workspace search failed.",
+            },
           });
         }
         continue;
@@ -809,8 +932,8 @@ class GeminiXViewProvider
             id,
             name,
             response: {
-              error: "A workspace-relative file_path is required."
-            }
+              error: "A workspace-relative file_path is required.",
+            },
           });
           continue;
         }
@@ -819,24 +942,24 @@ class GeminiXViewProvider
           type: "workspaceSearchStarted",
           requestId: id,
           kind: "reading",
-          message: `Let me read ${displayFileName(filePath)}.`
+          message: `Let me read ${displayFileName(filePath)}.`,
         });
         try {
           const file = await this.workspaceContextRetriever.readFile(
             filePath,
             getNumberArgument(functionCall.args, "start_line"),
-            getNumberArgument(functionCall.args, "end_line")
+            getNumberArgument(functionCall.args, "end_line"),
           );
           this.post({
             type: "workspaceSearchCompleted",
             requestId: id,
             files: [file.filePath],
-            message: `Read lines ${file.startLine}-${file.endLine}.`
+            message: `Read lines ${file.startLine}-${file.endLine}.`,
           });
           responses.push({
             id,
             name,
-            response: { file }
+            response: { file },
           });
         } catch (error) {
           responses.push({
@@ -846,8 +969,8 @@ class GeminiXViewProvider
               error:
                 error instanceof Error
                   ? error.message
-                  : "The workspace file could not be read."
-            }
+                  : "The workspace file could not be read.",
+            },
           });
         }
         continue;
@@ -859,7 +982,7 @@ class GeminiXViewProvider
           responses.push({
             id,
             name,
-            response: { error: "A valid http(s) URL is required." }
+            response: { error: "A valid http(s) URL is required." },
           });
           continue;
         }
@@ -868,14 +991,14 @@ class GeminiXViewProvider
           type: "workspaceSearchStarted",
           requestId: id,
           kind: "reading",
-          message: `Let me open ${url}.`
+          message: `Let me open ${url}.`,
         });
         try {
           const page = await fetchUrlAsText(url);
           this.post({
             type: "workspaceSearchCompleted",
             requestId: id,
-            message: `Fetched ${url}.`
+            message: `Fetched ${url}.`,
           });
           responses.push({
             id,
@@ -884,8 +1007,8 @@ class GeminiXViewProvider
               url,
               title: page.title,
               text: page.text,
-              truncated: page.truncated
-            }
+              truncated: page.truncated,
+            },
           });
         } catch (error) {
           responses.push({
@@ -895,8 +1018,8 @@ class GeminiXViewProvider
               error:
                 error instanceof Error
                   ? error.message
-                  : "The URL could not be fetched."
-            }
+                  : "The URL could not be fetched.",
+            },
           });
         }
         continue;
@@ -908,7 +1031,7 @@ class GeminiXViewProvider
           responses.push({
             id,
             name,
-            response: { error: "A non-empty search query is required." }
+            response: { error: "A non-empty search query is required." },
           });
           continue;
         }
@@ -919,7 +1042,7 @@ class GeminiXViewProvider
           type: "workspaceSearchStarted",
           requestId: id,
           kind: "web",
-          message: `Let me search ${source} for ${query}.`
+          message: `Let me search ${source} for ${query}.`,
         });
         try {
           const results = await searchWebSource(query, source);
@@ -928,7 +1051,7 @@ class GeminiXViewProvider
             requestId: id,
             message: results.length
               ? `Found ${results.length} result${results.length === 1 ? "" : "s"} on ${source}.`
-              : `No results on ${source} for ${query}.`
+              : `No results on ${source} for ${query}.`,
           });
           responses.push({
             id,
@@ -939,8 +1062,8 @@ class GeminiXViewProvider
               results,
               message: results.length
                 ? `Results from ${source} were found. Fetch the most relevant one with fetch_url.`
-                : `No matching results were found on ${source}. Try another source or a simpler query.`
-            }
+                : `No matching results were found on ${source}. Try another source or a simpler query.`,
+            },
           });
         } catch (error) {
           responses.push({
@@ -950,8 +1073,8 @@ class GeminiXViewProvider
               error:
                 error instanceof Error
                   ? error.message
-                  : "The web search failed."
-            }
+                  : "The web search failed.",
+            },
           });
         }
         continue;
@@ -960,18 +1083,15 @@ class GeminiXViewProvider
       responses.push({
         id,
         name,
-        response: { error: `Unknown tool: ${name}` }
+        response: { error: `Unknown tool: ${name}` },
       });
     }
 
-    if (
-      responses.length &&
-      session === this.session
-    ) {
+    if (responses.length && session === this.session) {
       if (!session.sendToolResponses(responses)) {
         this.post({
           type: "sessionError",
-          message: "The workspace tool results could not be sent to Gemini."
+          message: "The workspace tool results could not be sent to Gemini.",
         });
       }
     }
@@ -981,10 +1101,10 @@ class GeminiXViewProvider
     requestId: string | undefined,
     workspaceContext: Awaited<
       ReturnType<WorkspaceContextRetriever["retrieve"]>
-    >
+    >,
   ): void {
     const files = [
-      ...new Set(workspaceContext.snippets.map((snippet) => snippet.filePath))
+      ...new Set(workspaceContext.snippets.map((snippet) => snippet.filePath)),
     ];
     this.post({
       type: "workspaceSearchCompleted",
@@ -994,14 +1114,14 @@ class GeminiXViewProvider
         ? `Reviewed ${files.length} relevant code ${files.length === 1 ? "file" : "files"}.`
         : vscode.workspace.workspaceFolders?.length
           ? `Searched ${workspaceContext.indexedFileCount} source files; no strong code match was found.`
-          : "No VS Code workspace folder is open. Open the project folder to enable codebase search."
+          : "No VS Code workspace folder is open. Open the project folder to enable codebase search.",
     });
   }
 
   private postAttachmentState(): void {
     this.post({
       type: "attachmentsChanged",
-      attachments: this.attachmentStore.list()
+      attachments: this.attachmentStore.list(),
     });
   }
 
@@ -1012,10 +1132,10 @@ class GeminiXViewProvider
   private getHtml(webview: vscode.Webview): string {
     const nonce = randomBytes(16).toString("base64");
     const scriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "dist", "webview.js")
+      vscode.Uri.joinPath(this.extensionUri, "dist", "webview.js"),
     );
     const styleUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "dist", "styles.css")
+      vscode.Uri.joinPath(this.extensionUri, "dist", "styles.css"),
     );
 
     return `<!doctype html>
@@ -1037,7 +1157,18 @@ class GeminiXViewProvider
         </span>
       </div>
       <div class="header-actions">
-        <span id="headerStatus" class="header-status">Ready</span>
+        <button
+          id="refreshExtensionButton"
+          class="icon-button"
+          type="button"
+          aria-label="Refresh GeminiX"
+          title="Refresh GeminiX"
+        >
+          <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zm0 1a5 5 0 1 1 0 10 5 5 0 0 1 0-10z"/>
+            <path d="M13 8V6a1 1 0 0 0-1-1H9a1 1 0 0 0 0 2h3v2a1 1 0 0 0 1 1z"/>
+          </svg>
+        </button>
         <button
           id="newChatButton"
           class="icon-button"
@@ -1093,36 +1224,41 @@ class GeminiXViewProvider
                 <span id="statusDot" class="status-dot"></span>
                 <span id="statusLabel">Ready</span>
               </span>
-              <span class="status-actions">
-                <button
-                  id="muteMicButton"
-                  class="icon-button"
-                  type="button"
-                  title="Mute microphone"
-                  aria-label="Mute microphone"
-                  hidden
-                >
-                  <svg viewBox="0 0 20 20" aria-hidden="true">
-                    <path d="M10 2.5a2.5 2.5 0 0 0-2.5 2.5v5a2.5 2.5 0 0 0 5 0V5A2.5 2.5 0 0 0 10 2.5Z" />
-                    <path d="M6.5 9.25a.75.75 0 0 0-1.5 0 5 5 0 0 0 4.25 4.94V16H7a.75.75 0 0 0 0 1.5h6a.75.75 0 0 0 0-1.5h-2.25v-1.81a5 5 0 0 0 4.25-4.94.75.75 0 0 0-1.5 0 3.5 3.5 0 1 1-7 0Z" />
-                    <path d="M13.5 2.5a.75.75 0 0 1 .75.75v.75a.75.75 0 0 1-1.5 0V3.25a.75.75 0 0 1 .75-.75Z" class="mute-slash" />
-                    <path d="M13.5 6.5a.75.75 0 0 1 .75.75v.75a.75.75 0 0 1-1.5 0V7.25a.75.75 0 0 1 .75-.75Z" class="mute-slash" />
-                  </svg>
-                </button>
-                <button
-                  id="stopPlaybackButton"
-                  class="icon-button"
-                  type="button"
-                  title="Stop response"
-                  aria-label="Stop response"
-                  hidden
-                >
-                  <svg viewBox="0 0 20 20" aria-hidden="true">
-                    <rect x="4.5" y="4.5" width="11" height="11" rx="1.5" />
-                  </svg>
-                </button>
-                <span id="sessionTimer" class="session-timer hidden">00:00</span>
-              </span>
+              <span id="sessionTimer" class="session-timer hidden">00:00</span>
+            </div>
+            <div class="live-controls">
+              <button
+                id="muteMicButton"
+                class="control-button"
+                type="button"
+                title="Mute microphone"
+                aria-label="Mute microphone"
+                hidden
+              ></button>
+              <button
+                id="speakerMuteButton"
+                class="control-button"
+                type="button"
+                title="Mute Gemini's voice"
+                aria-label="Mute Gemini's voice"
+                hidden
+              ></button>
+              <button
+                id="shareScreenButton"
+                class="control-button"
+                type="button"
+                title="Share screen with Gemini"
+                aria-label="Share screen with Gemini"
+                hidden
+              ></button>
+              <button
+                id="stopPlaybackButton"
+                class="control-button"
+                type="button"
+                title="Stop response"
+                aria-label="Stop response"
+                hidden
+              ></button>
             </div>
             <div class="mic-track" aria-hidden="true">
               <span id="micMeter" class="mic-meter"></span>
@@ -1314,7 +1450,9 @@ class GeminiXViewProvider
   }
 }
 
-function getToolFunctionCalls(payload: unknown): readonly LiveToolFunctionCall[] {
+function getToolFunctionCalls(
+  payload: unknown,
+): readonly LiveToolFunctionCall[] {
   if (typeof payload !== "object" || payload === null) {
     return [];
   }
@@ -1324,9 +1462,8 @@ function getToolFunctionCalls(payload: unknown): readonly LiveToolFunctionCall[]
     return [];
   }
 
-  const functionCalls = (
-    toolCall as { readonly functionCalls?: unknown }
-  ).functionCalls;
+  const functionCalls = (toolCall as { readonly functionCalls?: unknown })
+    .functionCalls;
   return Array.isArray(functionCalls)
     ? (functionCalls as readonly LiveToolFunctionCall[])
     : [];
@@ -1334,17 +1471,15 @@ function getToolFunctionCalls(payload: unknown): readonly LiveToolFunctionCall[]
 
 function getStringArgument(
   args: Readonly<Record<string, unknown>> | undefined,
-  name: string
+  name: string,
 ): string | undefined {
   const value = args?.[name];
-  return typeof value === "string" && value.trim()
-    ? value.trim()
-    : undefined;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function getNumberArgument(
   args: Readonly<Record<string, unknown>> | undefined,
-  name: string
+  name: string,
 ): number | undefined {
   const value = args?.[name];
   return typeof value === "number" && Number.isFinite(value)
@@ -1355,10 +1490,10 @@ function getNumberArgument(
 function shouldAnnounceWorkspaceSearch(userText: string): boolean {
   return (
     /\b(find|search|locate|look\s+for|where|defined|definition|references?|usages?|implementation|codebase|workspace|project|file|component|route)\b/iu.test(
-      userText
+      userText,
     ) ||
     /(?:^|[\s"'`(])(?:[.@\w-]+[\\/])*[.@\w-]+\.[A-Za-z0-9]+(?=$|[\s"'`),:;?])/u.test(
-      userText
+      userText,
     )
   );
 }
@@ -1385,7 +1520,7 @@ async function fetchUrlAsText(url: string): Promise<{
   if (repoMatch?.[1] && repoMatch[2]) {
     const readme = await fetchRawReadme(
       repoMatch[1],
-      repoMatch[2].replace(/\.git$/i, "")
+      repoMatch[2].replace(/\.git$/i, ""),
     );
     if (readme) {
       text = `${htmlText}\n\n--- RAW README ---\n${readme}`;
@@ -1413,15 +1548,15 @@ async function fetchWithTimeout(url: string): Promise<{
       redirect: "follow",
       headers: {
         "User-Agent": "Mozilla/5.0 (compatible; GeminiX/1.0)",
-        Accept: "text/html,text/plain,application/json,*/*"
-      }
+        Accept: "text/html,text/plain,application/json,*/*",
+      },
     });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status} ${response.statusText}`);
     }
     return {
       body: await response.text(),
-      contentType: response.headers.get("content-type") ?? ""
+      contentType: response.headers.get("content-type") ?? "",
     };
   } finally {
     clearTimeout(timeout);
@@ -1439,12 +1574,12 @@ function stripHtml(html: string): string {
 
 async function fetchRawReadme(
   owner: string,
-  repo: string
+  repo: string,
 ): Promise<string | undefined> {
   for (const candidate of [
     `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/README.md`,
     `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/README.rst`,
-    `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/readme.md`
+    `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/readme.md`,
   ]) {
     try {
       const { body } = await fetchWithTimeout(candidate);
@@ -1468,10 +1603,10 @@ interface WebSearchResult {
 }
 
 async function searchWikipedia(
-  query: string
+  query: string,
 ): Promise<readonly WebSearchResult[]> {
   const { body } = await fetchWithTimeout(
-    `${WIKIPEDIA_SEARCH_URL}&srsearch=${encodeURIComponent(query)}`
+    `${WIKIPEDIA_SEARCH_URL}&srsearch=${encodeURIComponent(query)}`,
   );
   const data: unknown = JSON.parse(body);
   if (typeof data !== "object" || data === null) {
@@ -1491,11 +1626,11 @@ async function searchWikipedia(
       return {
         title,
         url: `https://en.wikipedia.org/wiki/${encodeURIComponent(
-          title.replace(/ /g, "_")
+          title.replace(/ /g, "_"),
         )}`,
         description: stripHtml(
-          typeof record.snippet === "string" ? record.snippet : ""
-        )
+          typeof record.snippet === "string" ? record.snippet : "",
+        ),
       };
     })
     .filter((result): result is WebSearchResult => result !== undefined);
@@ -1503,7 +1638,7 @@ async function searchWikipedia(
 
 async function searchWebSource(
   query: string,
-  source: string
+  source: string,
 ): Promise<readonly WebSearchResult[]> {
   switch (source) {
     case "stackoverflow":
@@ -1529,11 +1664,11 @@ async function searchWebSource(
 }
 
 async function searchStackOverflow(
-  query: string
+  query: string,
 ): Promise<readonly WebSearchResult[]> {
   const { body } = await fetchWithTimeout(
     "https://api.stackexchange.com/2.3/search/advanced" +
-      `?order=desc&sort=relevance&pagesize=5&site=stackoverflow&q=${encodeURIComponent(query)}`
+      `?order=desc&sort=relevance&pagesize=5&site=stackoverflow&q=${encodeURIComponent(query)}`,
   );
   const data: unknown = JSON.parse(body);
   const items = (data as { items?: unknown }).items;
@@ -1556,7 +1691,7 @@ async function searchStackOverflow(
       return {
         title,
         url: link,
-        description: `Score ${typeof record.score === "number" ? record.score : 0}, ${typeof record.answer_count === "number" ? record.answer_count : 0} answers. Stack Overflow question.`
+        description: `Score ${typeof record.score === "number" ? record.score : 0}, ${typeof record.answer_count === "number" ? record.answer_count : 0} answers. Stack Overflow question.`,
       };
     })
     .filter((result): result is WebSearchResult => result !== undefined);
@@ -1564,7 +1699,7 @@ async function searchStackOverflow(
 
 async function searchMdn(query: string): Promise<readonly WebSearchResult[]> {
   const { body } = await fetchWithTimeout(
-    `https://developer.mozilla.org/api/v1/search?q=${encodeURIComponent(query)}&locale=en-US`
+    `https://developer.mozilla.org/api/v1/search?q=${encodeURIComponent(query)}&locale=en-US`,
   );
   const data: unknown = JSON.parse(body);
   const documents = (data as { documents?: unknown }).documents;
@@ -1586,18 +1721,17 @@ async function searchMdn(query: string): Promise<readonly WebSearchResult[]> {
       return {
         title,
         url: `https://developer.mozilla.org${mdnUrl}`,
-        description:
-          typeof record.summary === "string" ? record.summary : ""
+        description: typeof record.summary === "string" ? record.summary : "",
       };
     })
     .filter((result): result is WebSearchResult => result !== undefined);
 }
 
 async function searchHackerNews(
-  query: string
+  query: string,
 ): Promise<readonly WebSearchResult[]> {
   const { body } = await fetchWithTimeout(
-    `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=5`
+    `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=5`,
   );
   const data: unknown = JSON.parse(body);
   const hits = (data as { hits?: unknown }).hits;
@@ -1625,17 +1759,17 @@ async function searchHackerNews(
           typeof record.url === "string" && record.url
             ? record.url
             : `https://news.ycombinator.com/item?id=${objectID}`,
-        description: `${typeof record.points === "number" ? record.points : 0} points, ${typeof record.num_comments === "number" ? record.num_comments : 0} comments. Hacker News discussion.`
+        description: `${typeof record.points === "number" ? record.points : 0} points, ${typeof record.num_comments === "number" ? record.num_comments : 0} comments. Hacker News discussion.`,
       };
     })
     .filter((result): result is WebSearchResult => result !== undefined);
 }
 
 async function searchGitHubRepos(
-  query: string
+  query: string,
 ): Promise<readonly WebSearchResult[]> {
   const { body } = await fetchWithTimeout(
-    `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&per_page=5`
+    `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&per_page=5`,
   );
   const data: unknown = JSON.parse(body);
   const items = (data as { items?: unknown }).items;
@@ -1668,7 +1802,8 @@ async function searchGitHubRepos(
       return {
         title: fullName,
         url: htmlUrl,
-        description: `${typeof record.stargazers_count === "number" ? record.stargazers_count : 0} stars, ${typeof record.language === "string" ? record.language : "unknown"} language, ${license}. ${description}`.trim()
+        description:
+          `${typeof record.stargazers_count === "number" ? record.stargazers_count : 0} stars, ${typeof record.language === "string" ? record.language : "unknown"} language, ${license}. ${description}`.trim(),
       };
     })
     .filter((result): result is WebSearchResult => result !== undefined);
@@ -1677,7 +1812,7 @@ async function searchGitHubRepos(
 const NODE_RELEASES_URL = "https://nodejs.org/dist/index.json";
 
 async function lookupPackage(
-  name: string
+  name: string,
 ): Promise<readonly WebSearchResult[]> {
   const normalized = name.trim().toLowerCase();
   if (
@@ -1693,8 +1828,7 @@ async function lookupPackage(
       }
       const latest = releases[0] as { version?: unknown } | undefined;
       const lts = releases.find(
-        (release) =>
-          (release as { lts?: boolean | string }).lts !== false
+        (release) => (release as { lts?: boolean | string }).lts !== false,
       ) as { version?: unknown } | undefined;
       const versionOf = (release: { version?: unknown } | undefined): string =>
         typeof release?.version === "string" ? release.version : "";
@@ -1702,8 +1836,8 @@ async function lookupPackage(
         {
           title: `Node.js latest version: ${versionOf(latest)}`,
           url: "https://nodejs.org/en",
-          description: `Current (latest): ${versionOf(latest)}; latest LTS: ${versionOf(lts)}. Official Node.js releases.`
-        }
+          description: `Current (latest): ${versionOf(latest)}; latest LTS: ${versionOf(lts)}. Official Node.js releases.`,
+        },
       ];
     } catch {
       return [];
@@ -1712,7 +1846,7 @@ async function lookupPackage(
 
   try {
     const { body } = await fetchWithTimeout(
-      `https://registry.npmjs.org/${encodeURIComponent(normalized)}`
+      `https://registry.npmjs.org/${encodeURIComponent(normalized)}`,
     );
     const data: unknown = JSON.parse(body);
     const latest = (data as { "dist-tags"?: { latest?: unknown } })?.[
@@ -1723,8 +1857,8 @@ async function lookupPackage(
         {
           title: `npm: ${normalized}@${latest}`,
           url: `https://www.npmjs.com/package/${encodeURIComponent(normalized)}`,
-          description: `Latest version of the npm package '${normalized}' is ${latest}.`
-        }
+          description: `Latest version of the npm package '${normalized}' is ${latest}.`,
+        },
       ];
     }
   } catch {
@@ -1733,7 +1867,7 @@ async function lookupPackage(
 
   try {
     const { body } = await fetchWithTimeout(
-      `https://pypi.org/pypi/${encodeURIComponent(normalized)}/json`
+      `https://pypi.org/pypi/${encodeURIComponent(normalized)}/json`,
     );
     const data: unknown = JSON.parse(body);
     const version = (data as { info?: { version?: unknown } }).info?.version;
@@ -1742,8 +1876,8 @@ async function lookupPackage(
         {
           title: `PyPI: ${normalized} ${version}`,
           url: `https://pypi.org/project/${encodeURIComponent(normalized)}/`,
-          description: `Latest version of the Python package '${normalized}' is ${version}.`
-        }
+          description: `Latest version of the Python package '${normalized}' is ${version}.`,
+        },
       ];
     }
   } catch {
@@ -1756,16 +1890,18 @@ async function lookupPackage(
 async function lookupCrate(name: string): Promise<readonly WebSearchResult[]> {
   try {
     const { body } = await fetchWithTimeout(
-      `https://crates.io/api/v1/crates/${encodeURIComponent(name.toLowerCase())}`
+      `https://crates.io/api/v1/crates/${encodeURIComponent(name.toLowerCase())}`,
     );
     const data: unknown = JSON.parse(body);
-    const crate = (data as {
-      crate?: {
-        max_stable_version?: unknown;
-        newest_version?: unknown;
-        description?: unknown;
-      };
-    }).crate;
+    const crate = (
+      data as {
+        crate?: {
+          max_stable_version?: unknown;
+          newest_version?: unknown;
+          description?: unknown;
+        };
+      }
+    ).crate;
     const version =
       typeof crate?.max_stable_version === "string" &&
       crate.max_stable_version.length > 0
@@ -1783,8 +1919,8 @@ async function lookupCrate(name: string): Promise<readonly WebSearchResult[]> {
         description:
           typeof crate?.description === "string"
             ? crate.description
-            : `Latest version of the Rust crate '${name.toLowerCase()}' is ${version}.`
-      }
+            : `Latest version of the Rust crate '${name.toLowerCase()}' is ${version}.`,
+      },
     ];
   } catch {
     return [];
@@ -1792,11 +1928,11 @@ async function lookupCrate(name: string): Promise<readonly WebSearchResult[]> {
 }
 
 async function lookupRubyGem(
-  name: string
+  name: string,
 ): Promise<readonly WebSearchResult[]> {
   try {
     const { body } = await fetchWithTimeout(
-      `https://rubygems.org/api/v1/gems/${encodeURIComponent(name)}.json`
+      `https://rubygems.org/api/v1/gems/${encodeURIComponent(name)}.json`,
     );
     const data: unknown = JSON.parse(body);
     const record = data as {
@@ -1816,8 +1952,8 @@ async function lookupRubyGem(
         description:
           typeof record.info === "string"
             ? record.info
-            : `Latest version of the Ruby gem '${gemName}' is ${version}.`
-      }
+            : `Latest version of the Ruby gem '${gemName}' is ${version}.`,
+      },
     ];
   } catch {
     return [];
@@ -1829,19 +1965,19 @@ function escapeGoModule(modulePath: string): string {
     .split("/")
     .map((segment) =>
       segment.replace(/[A-Z!]/g, (character) =>
-        character === "!" ? "!!" : `!${character.toLowerCase()}`
-      )
+        character === "!" ? "!!" : `!${character.toLowerCase()}`,
+      ),
     )
     .join("/");
 }
 
 async function lookupGoModule(
-  modulePath: string
+  modulePath: string,
 ): Promise<readonly WebSearchResult[]> {
   try {
     const escaped = escapeGoModule(modulePath.trim());
     const { body } = await fetchWithTimeout(
-      `https://proxy.golang.org/${escaped}/@latest`
+      `https://proxy.golang.org/${escaped}/@latest`,
     );
     const data: unknown = JSON.parse(body);
     const version = (data as { Version?: unknown }).Version;
@@ -1852,8 +1988,8 @@ async function lookupGoModule(
       {
         title: `Go module: ${modulePath.trim()} ${version}`,
         url: `https://pkg.go.dev/${modulePath.trim()}`,
-        description: `Latest version of the Go module '${modulePath.trim()}' is ${version}.`
-      }
+        description: `Latest version of the Go module '${modulePath.trim()}' is ${version}.`,
+      },
     ];
   } catch {
     return [];
@@ -1864,19 +2000,19 @@ export function activate(context: vscode.ExtensionContext): void {
   const provider = new GeminiXViewProvider(
     context.extensionUri,
     context.secrets,
-    context.globalStorageUri
+    context.globalStorageUri,
   );
 
   context.subscriptions.push(
     provider,
     vscode.window.registerWebviewViewProvider(VIEW_ID, provider, {
       webviewOptions: {
-        retainContextWhenHidden: true
-      }
+        retainContextWhenHidden: true,
+      },
     }),
     vscode.commands.registerCommand("liveline.configureApiKey", () =>
-      provider.configureApiKey()
-    )
+      provider.configureApiKey(),
+    ),
   );
 }
 

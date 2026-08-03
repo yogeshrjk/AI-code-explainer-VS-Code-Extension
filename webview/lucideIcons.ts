@@ -7,8 +7,18 @@ import { __iconNode as bookOpenNode } from "lucide-react/dist/esm/icons/book-ope
 import { __iconNode as lightbulbNode } from "lucide-react/dist/esm/icons/lightbulb.mjs";
 import { __iconNode as imageNode } from "lucide-react/dist/esm/icons/image.mjs";
 import { __iconNode as volume2Node } from "lucide-react/dist/esm/icons/volume-2.mjs";
+import { __iconNode as volumeXNode } from "lucide-react/dist/esm/icons/volume-x.mjs";
 import { __iconNode as brainNode } from "lucide-react/dist/esm/icons/brain.mjs";
 import { __iconNode as fileTextNode } from "lucide-react/dist/esm/icons/file-text.mjs";
+import { __iconNode as micNode } from "lucide-react/dist/esm/icons/mic.mjs";
+import { __iconNode as micOffNode } from "lucide-react/dist/esm/icons/mic-off.mjs";
+import { __iconNode as castNode } from "lucide-react/dist/esm/icons/cast.mjs";
+import { __iconNode as squareNode } from "lucide-react/dist/esm/icons/square.mjs";
+import { __iconNode as pencilNode } from "lucide-react/dist/esm/icons/pencil.mjs";
+import { __iconNode as sendNode } from "lucide-react/dist/esm/icons/send.mjs";
+import { __iconNode as refreshCwNode } from "lucide-react/dist/esm/icons/refresh-cw.mjs";
+import { __iconNode as copyNode } from "lucide-react/dist/esm/icons/copy.mjs";
+import { __iconNode as checkNode } from "lucide-react/dist/esm/icons/check.mjs";
 
 type LucideNode = ReadonlyArray<
   readonly [tag: string, attributes: Readonly<Record<string, string | number>>]
@@ -20,8 +30,18 @@ const ICON_NODES = {
   lightbulb: lightbulbNode,
   image: imageNode,
   "volume-2": volume2Node,
+  "volume-x": volumeXNode,
   brain: brainNode,
-  "file-text": fileTextNode
+  "file-text": fileTextNode,
+  mic: micNode,
+  "mic-off": micOffNode,
+  cast: castNode,
+  square: squareNode,
+  pencil: pencilNode,
+  send: sendNode,
+  "refresh-cw": refreshCwNode,
+  copy: copyNode,
+  check: checkNode
 } as const;
 
 export type LucideIconName = keyof typeof ICON_NODES;
