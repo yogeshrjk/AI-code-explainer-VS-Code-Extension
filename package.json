@@ -2,7 +2,7 @@
   "name": "gemini-x",
   "displayName": "GeminiX",
   "description": "Explore and explain selected code with Gemini Live inside VS Code.",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "icon": "media/gemini-x.png",
   "publisher": "YogeshRajak",
   "license": "MIT",
@@ -28,7 +28,11 @@
   ],
   "activationEvents": [
     "onView:liveline.chatView",
-    "onCommand:liveline.configureApiKey"
+    "onCommand:liveline.configureApiKey",
+    "onCommand:liveline.newChat",
+    "onCommand:liveline.history",
+    "onCommand:liveline.settings",
+    "onCommand:liveline.refresh"
   ],
   "main": "./dist/extension.js",
   "files": [
@@ -40,7 +44,7 @@
   "scripts": {
     "build": "node esbuild.mjs",
     "check": "tsc --noEmit && eslint .",
-    "package": "npm run check && npm run build && vsce package --out gemini-x-v0.6.1.vsix",
+    "package": "npm run check && npm run build && vsce package --out gemini-x-v0.6.4.vsix",
     "test": "node --import tsx --test tests/*.test.ts",
     "vscode:prepublish": "npm run build"
   },
@@ -49,6 +53,26 @@
       {
         "command": "liveline.configureApiKey",
         "title": "GeminiX: Configure Gemini API Key"
+      },
+      {
+        "command": "liveline.newChat",
+        "title": "GeminiX: New chat",
+        "icon": "media/icons/new-chat.svg"
+      },
+      {
+        "command": "liveline.history",
+        "title": "GeminiX: Chat history",
+        "icon": "media/icons/history.svg"
+      },
+      {
+        "command": "liveline.settings",
+        "title": "GeminiX: Settings",
+        "icon": "media/icons/settings.svg"
+      },
+      {
+        "command": "liveline.refresh",
+        "title": "GeminiX: Refresh",
+        "icon": "media/icons/refresh.svg"
       }
     ],
     "viewsContainers": {
@@ -64,8 +88,33 @@
       "liveline": [
         {
           "id": "liveline.chatView",
-          "name": "GeminiX",
+          "name": "",
+          "icon": "media/icon.svg",
           "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "liveline.refresh",
+          "when": "view == liveline.chatView",
+          "group": "navigation"
+        },
+        {
+          "command": "liveline.newChat",
+          "when": "view == liveline.chatView",
+          "group": "navigation"
+        },
+        {
+          "command": "liveline.history",
+          "when": "view == liveline.chatView",
+          "group": "navigation"
+        },
+        {
+          "command": "liveline.settings",
+          "when": "view == liveline.chatView",
+          "group": "navigation"
         }
       ]
     },

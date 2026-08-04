@@ -16,6 +16,7 @@
   --danger: var(--vscode-errorForeground, #f48771);
   --success: var(--vscode-testing-iconPassed, #73c991);
   --warning: var(--vscode-editorWarning-foreground, #cca700);
+  --header-action-text: #999;
   font-family: var(--vscode-font-family, "Segoe UI", sans-serif);
   font-size: var(--vscode-font-size, 13px);
 }
@@ -33,6 +34,8 @@ body {
 
 body {
   margin: 0;
+  display: flex;
+  flex-direction: column;
   background: var(--vscode-sideBar-background);
   color: var(--vscode-foreground);
 }
@@ -62,78 +65,10 @@ textarea:focus-visible {
 
 .app-shell {
   display: flex;
-  height: 100vh;
+  min-height: 0;
   min-width: 0;
+  flex: 1 1 auto;
   flex-direction: column;
-}
-
-.app-header {
-  display: flex;
-  min-height: 44px;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 7px 8px 7px 12px;
-  border-bottom: 1px solid var(--panel-border);
-  background: var(--vscode-sideBar-background);
-}
-
-.brand {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-}
-
-.brand strong,
-.brand small {
-  display: block;
-}
-
-.brand strong {
-  overflow: hidden;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.brand small {
-  margin-top: 1px;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 9px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.header-actions {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 5px;
-}
-
-.header-status {
-  max-width: 86px;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 9px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.header-status[data-tone="live"] {
-  color: var(--success);
-}
-
-.header-status[data-tone="busy"] {
-  color: var(--warning);
-}
-
-.header-status[data-tone="error"] {
-  color: var(--danger);
 }
 
 .icon-button {
@@ -160,16 +95,6 @@ textarea:focus-visible {
   width: 16px;
   height: 16px;
   fill: currentColor;
-}
-
-.settings-button {
-  width: 32px;
-  height: 32px;
-}
-
-.settings-button svg {
-  width: 20px;
-  height: 20px;
 }
 
 .app-main {
@@ -244,7 +169,7 @@ textarea:focus-visible {
   flex: 0 0 auto;
   align-items: center;
   flex-direction: column;
-  padding: 8px 10px 11px;
+  padding: 8px 6px 11px;
   background:
     radial-gradient(
       circle at 50% 30%,
@@ -952,7 +877,7 @@ body.vscode-high-contrast .shiki span {
   position: relative;
   z-index: 3;
   flex: 0 0 auto;
-  padding: 8px 10px 7px;
+  padding: 8px 6px 7px;
   border-top: 1px solid var(--panel-border);
   background: var(--vscode-sideBar-background);
 }
@@ -1481,6 +1406,47 @@ body.vscode-high-contrast .shiki span {
   color: var(--danger);
 }
 
+.bulk-delete-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 10px 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--panel-border);
+  border-radius: 5px;
+  background: var(--soft-background);
+}
+
+.select-all-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.bulk-delete-count {
+  flex: 1 1 auto;
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.bulk-delete-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 5px;
+}
+
+.chat-history-row.is-selecting {
+  cursor: pointer;
+}
+
+.chat-history-check {
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
 .empty-history {
   padding: 36px 14px;
   color: var(--muted);
@@ -1502,6 +1468,10 @@ body.vscode-high-contrast .shiki span {
   margin-top: 1px;
   color: var(--muted);
   font-size: 9px;
+}
+
+.settings-header svg {
+  color: var(--header-action-text);
 }
 
 .settings-group {

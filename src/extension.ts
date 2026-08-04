@@ -37,6 +37,7 @@ interface WebviewMessage {
   readonly code?: string;
   readonly targetId?: string;
   readonly chatId?: string;
+  readonly chatIds?: readonly string[];
   readonly chat?: StoredChat;
   readonly includeCurrentPage?: boolean;
   readonly currentPageUri?: string;
@@ -231,6 +232,9 @@ class GeminiXViewProvider
           break;
         case "deleteChat":
           await this.deleteChat(message.chatId);
+          break;
+        case "deleteChats":
+          await this.deleteChats(message.chatIds);
           break;
         case "copyCode":
           await this.copyCode(message.code, message.actionId);
@@ -646,6 +650,33 @@ class GeminiXViewProvider
     });
   }
 
+  private async deleteChats(
+    chatIds: readonly string[] | undefined,
+  ): Promise<void> {
+    if (!chatIds || chatIds.length === 0) {
+      throw new Error("Choose at least one saved chat to delete.");
+    }
+
+    const confirmation = await vscode.window.showWarningMessage(
+      `Delete ${chatIds.length} saved GeminiX chat${chatIds.length === 1 ? "" : "s"}? This cannot be undone.`,
+      { modal: true },
+      "Delete",
+    );
+    if (confirmation !== "Delete") {
+      return;
+    }
+
+    for (const chatId of chatIds) {
+      await this.chatHistory.delete(chatId);
+    }
+    this.post({
+      type: "chatDeleted",
+      chatId: chatIds[0],
+      chatIds,
+      chats: await this.chatHistory.list(),
+    });
+  }
+
   private async sendVoiceContext(): Promise<void> {
     const context = captureEditorContext();
     const session = this.session;
@@ -727,8 +758,16 @@ class GeminiXViewProvider
     });
   }
 
-  private refreshExtension(): void {
+  public refreshExtension(): void {
     vscode.commands.executeCommand("workbench.action.reloadWindow");
+  }
+
+  public openPanel(panel: "history" | "settings"): void {
+    this.post({ type: "openPanel", panel });
+  }
+
+  public startNewChat(): void {
+    this.post({ type: "newChat" });
   }
 
   private postEditorContextState(): void {
@@ -1149,64 +1188,6 @@ class GeminiXViewProvider
 </head>
 <body>
   <div class="app-shell">
-    <header class="app-header">
-      <div class="brand">
-        <span>
-          <strong>GeminiX</strong>
-          <small>Gemini Live code assistant</small>
-        </span>
-      </div>
-      <div class="header-actions">
-        <button
-          id="refreshExtensionButton"
-          class="icon-button"
-          type="button"
-          aria-label="Refresh GeminiX"
-          title="Refresh GeminiX"
-        >
-          <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <path d="M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zm0 1a5 5 0 1 1 0 10 5 5 0 0 1 0-10z"/>
-            <path d="M13 8V6a1 1 0 0 0-1-1H9a1 1 0 0 0 0 2h3v2a1 1 0 0 0 1 1z"/>
-          </svg>
-        </button>
-        <button
-          id="newChatButton"
-          class="icon-button"
-          type="button"
-          aria-label="Start a new chat"
-          title="New chat"
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M2 2h8.5A1.5 1.5 0 0 1 12 3.5V7h-1.2V3.5a.3.3 0 0 0-.3-.3h-7a.3.3 0 0 0-.3.3v7a.3.3 0 0 0 .3.3H7V12H3.5A1.5 1.5 0 0 1 2 10.5V2zm9.4 6v2.6H14v1.2h-2.6v2.6h-1.2v-2.6H7.6v-1.2h2.6V8h1.2z"/>
-          </svg>
-        </button>
-        <button
-          id="historyButton"
-          class="icon-button"
-          type="button"
-          aria-label="Open chat history"
-          aria-pressed="false"
-          title="Chat history"
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M8 2a6 6 0 1 1-5.64 3.95l1.13.41A4.8 4.8 0 1 0 8 3.2c-1.3 0-2.48.51-3.34 1.35L6.2 6.1H2V1.9l1.8 1.8A5.98 5.98 0 0 1 8 2zm-.6 2.4h1.2v3.35l2.25 1.3-.6 1.04L7.4 8.45V4.4z"/>
-          </svg>
-        </button>
-        <button
-          id="settingsButton"
-          class="icon-button settings-button"
-          type="button"
-          aria-label="Open settings"
-          aria-pressed="false"
-          title="Settings"
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M9.9 1.5l.35 1.4c.3.13.57.29.82.48l1.39-.42 1.15 1.98-1.04 1c.03.2.05.4.05.61s-.02.41-.05.61l1.04 1-1.15 1.98-1.39-.42c-.25.19-.52.35-.82.48l-.35 1.4H7.6l-.35-1.4a4.4 4.4 0 0 1-.82-.48l-1.39.42-1.15-1.98 1.04-1a4 4 0 0 1 0-1.22l-1.04-1 1.15-1.98 1.39.42c.25-.19.52-.35.82-.48l.35-1.4h2.3zm-1.15 3.3a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5z"/>
-          </svg>
-        </button>
-      </div>
-    </header>
-
     <main class="app-main">
       <section id="chatPanel" class="panel is-active" aria-label="Chat">
         <div class="chat-scroll-region">
@@ -1217,8 +1198,6 @@ class GeminiXViewProvider
           </div>
 
           <section id="voiceStage" class="voice-stage">
-            <canvas id="orbCanvas" aria-label="Live session animation"></canvas>
-            <span id="orbMode" class="orb-mode">standby</span>
             <div class="status-line">
               <span class="status-left">
                 <span id="statusDot" class="status-dot"></span>
@@ -1226,6 +1205,8 @@ class GeminiXViewProvider
               </span>
               <span id="sessionTimer" class="session-timer hidden">00:00</span>
             </div>
+            <canvas id="orbCanvas" aria-label="Live session animation"></canvas>
+            <span id="orbMode" class="orb-mode">standby</span>
             <div class="live-controls">
               <button
                 id="muteMicButton"
@@ -1362,7 +1343,19 @@ class GeminiXViewProvider
             <strong>Chat history</strong>
             <small>Stored locally by GeminiX</small>
           </span>
+          <button id="deleteChatsButton" class="secondary-button compact danger-action" type="button">Delete</button>
           <button id="newChatFromHistoryButton" class="secondary-button compact" type="button">New chat</button>
+        </div>
+        <div id="bulkDeleteBar" class="bulk-delete-bar hidden">
+          <label class="select-all-row">
+            <input id="selectAllChatsInput" type="checkbox" aria-label="Select all chats">
+            <span>Select all</span>
+          </label>
+          <span id="bulkDeleteCount" class="bulk-delete-count">0 selected</span>
+          <span class="bulk-delete-actions">
+            <button id="confirmBulkDeleteButton" class="primary-button compact" type="button" disabled>Delete</button>
+            <button id="cancelBulkDeleteButton" class="secondary-button compact" type="button">Cancel</button>
+          </span>
         </div>
         <div id="chatHistoryList" class="chat-history-list">
           <div id="emptyHistory" class="empty-history">No saved chats yet.</div>
@@ -2012,6 +2005,18 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("liveline.configureApiKey", () =>
       provider.configureApiKey(),
+    ),
+    vscode.commands.registerCommand("liveline.newChat", () =>
+      provider.startNewChat(),
+    ),
+    vscode.commands.registerCommand("liveline.history", () =>
+      provider.openPanel("history"),
+    ),
+    vscode.commands.registerCommand("liveline.settings", () =>
+      provider.openPanel("settings"),
+    ),
+    vscode.commands.registerCommand("liveline.refresh", () =>
+      provider.refreshExtension(),
     ),
   );
 }

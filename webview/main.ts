@@ -203,6 +203,7 @@ interface HostMessage {
   readonly attachmentDisplays?: readonly AttachmentDisplay[];
   readonly chat?: StoredChat;
   readonly chatId?: string;
+  readonly chatIds?: readonly string[];
   readonly chats?: readonly ChatSummary[];
   readonly text?: string;
   readonly level?: number;
@@ -212,6 +213,7 @@ interface HostMessage {
   readonly functionName?: string;
   readonly frame?: ScreenFrame;
   readonly fromEdit?: boolean;
+  readonly panel?: string;
 }
 
 interface TranscriptMessage {
@@ -334,9 +336,6 @@ const elements = {
   apiRequiredCard: requiredElement<HTMLElement>("apiRequiredCard"),
   apiStatusDot: requiredElement<HTMLElement>("apiStatusDot"),
   apiStatusText: requiredElement<HTMLElement>("apiStatusText"),
-  refreshExtensionButton: requiredElement<HTMLButtonElement>(
-    "refreshExtensionButton"
-  ),
   attachFileButton:
     requiredElement<HTMLButtonElement>("attachFileButton"),
   attachImageButton:
@@ -351,8 +350,14 @@ const elements = {
   backFromHistoryButton:
     requiredElement<HTMLButtonElement>("backFromHistoryButton"),
   behaviorSelect: requiredElement<HTMLSelectElement>("behaviorSelect"),
+  bulkDeleteBar: requiredElement<HTMLElement>("bulkDeleteBar"),
+  bulkDeleteCount: requiredElement<HTMLElement>("bulkDeleteCount"),
+  cancelBulkDeleteButton:
+    requiredElement<HTMLButtonElement>("cancelBulkDeleteButton"),
   chatPanel: requiredElement<HTMLElement>("chatPanel"),
   chatHistoryList: requiredElement<HTMLElement>("chatHistoryList"),
+  confirmBulkDeleteButton:
+    requiredElement<HTMLButtonElement>("confirmBulkDeleteButton"),
   clearButton: requiredElement<HTMLButtonElement>("clearButton"),
   configureApiButton:
     requiredElement<HTMLButtonElement>("configureApiButton"),
@@ -362,11 +367,11 @@ const elements = {
     requiredElement<HTMLButtonElement>("currentPageMention"),
   currentPageMentionLabel:
     requiredElement<HTMLElement>("currentPageMentionLabel"),
+  deleteChatsButton: requiredElement<HTMLButtonElement>("deleteChatsButton"),
   emptyState: requiredElement<HTMLElement>("emptyState"),
   emptyHistory: requiredElement<HTMLElement>("emptyHistory"),
   errorBox: requiredElement<HTMLElement>("errorBox"),
   languageSelect: requiredElement<HTMLSelectElement>("languageSelect"),
-  historyButton: requiredElement<HTMLButtonElement>("historyButton"),
   historyPanel: requiredElement<HTMLElement>("historyPanel"),
   micMeter: requiredElement<HTMLElement>("micMeter"),
   mentionMenu: requiredElement<HTMLElement>("mentionMenu"),
@@ -374,7 +379,6 @@ const elements = {
   orbCanvas: requiredElement<HTMLCanvasElement>("orbCanvas"),
   orbMode: requiredElement<HTMLElement>("orbMode"),
   reconnectHint: requiredElement<HTMLElement>("reconnectHint"),
-  newChatButton: requiredElement<HTMLButtonElement>("newChatButton"),
   newChatFromHistoryButton:
     requiredElement<HTMLButtonElement>("newChatFromHistoryButton"),
   removeApiButton: requiredElement<HTMLButtonElement>("removeApiButton"),
@@ -383,6 +387,8 @@ const elements = {
   saveApiButton: requiredElement<HTMLButtonElement>("saveApiButton"),
   savePreferencesButton:
     requiredElement<HTMLButtonElement>("savePreferencesButton"),
+  selectAllChatsInput:
+    requiredElement<HTMLInputElement>("selectAllChatsInput"),
   selectionBar: requiredElement<HTMLElement>("selectionBar"),
   selectionLabel: requiredElement<HTMLElement>("selectionLabel"),
   sendButton: requiredElement<HTMLButtonElement>("sendButton"),
@@ -392,7 +398,6 @@ const elements = {
     requiredElement<HTMLButtonElement>("shareScreenButton"),
   speakerMuteButton:
     requiredElement<HTMLButtonElement>("speakerMuteButton"),
-  settingsButton: requiredElement<HTMLButtonElement>("settingsButton"),
   settingsFeedback: requiredElement<HTMLElement>("settingsFeedback"),
   settingsPanel: requiredElement<HTMLElement>("settingsPanel"),
   statusDot: requiredElement<HTMLElement>("statusDot"),
@@ -421,6 +426,8 @@ const state = {
   attachedCurrentPage: false,
   attachments: [] as readonly AttachmentSummary[],
   audioContext: undefined as AudioContext | undefined,
+  bulkDeleteMode: false,
+  bulkDeleteSelected: new Set<string>(),
   chatMessages: [] as ChatMessage[],
   chats: [] as readonly ChatSummary[],
   currentModelMessage: undefined as TranscriptMessage | undefined,
@@ -486,25 +493,12 @@ function initializeSelects(): void {
 }
 
 function setActiveTab(tabName: "chat" | "history" | "settings"): void {
+  if (tabName !== "history" && state.bulkDeleteMode) {
+    setBulkDeleteMode(false);
+  }
   elements.chatPanel.classList.toggle("is-active", tabName === "chat");
   elements.historyPanel.classList.toggle("is-active", tabName === "history");
   elements.settingsPanel.classList.toggle("is-active", tabName === "settings");
-  elements.historyButton.classList.toggle(
-    "is-active",
-    tabName === "history"
-  );
-  elements.historyButton.setAttribute(
-    "aria-pressed",
-    String(tabName === "history")
-  );
-  elements.settingsButton.classList.toggle(
-    "is-active",
-    tabName === "settings"
-  );
-  elements.settingsButton.setAttribute(
-    "aria-pressed",
-    String(tabName === "settings")
-  );
 
   if (tabName === "chat") {
     scrollTranscriptToBottom("auto");
@@ -654,6 +648,32 @@ function updateChatHistory(chats: readonly ChatSummary[] | undefined): void {
     row.className = "chat-history-row";
     row.dataset["chatId"] = chat.id;
 
+    let checkbox: HTMLInputElement | undefined;
+    if (state.bulkDeleteMode) {
+      row.classList.add("is-selecting");
+      checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "chat-history-check";
+      checkbox.checked = state.bulkDeleteSelected.has(chat.id);
+      checkbox.setAttribute("aria-label", `Select ${chat.title}`);
+      checkbox.addEventListener("change", () => {
+        if (checkbox) {
+          if (checkbox.checked) {
+            state.bulkDeleteSelected.add(chat.id);
+          } else {
+            state.bulkDeleteSelected.delete(chat.id);
+          }
+          updateBulkDeleteState();
+        }
+      });
+      row.addEventListener("click", (event) => {
+        if (checkbox && !(event.target instanceof HTMLButtonElement)) {
+          checkbox.checked = !checkbox.checked;
+          checkbox.dispatchEvent(new Event("change"));
+        }
+      });
+    }
+
     const copy = document.createElement("span");
     copy.className = "chat-history-copy";
     const title = document.createElement("strong");
@@ -689,6 +709,9 @@ function updateChatHistory(chats: readonly ChatSummary[] | undefined): void {
     });
 
     actions.append(reuse, remove);
+    if (checkbox) {
+      row.append(checkbox);
+    }
     row.append(copy, actions);
     return row;
   });
@@ -698,6 +721,27 @@ function updateChatHistory(chats: readonly ChatSummary[] | undefined): void {
   if (!rows.length) {
     elements.chatHistoryList.append(elements.emptyHistory);
   }
+  updateBulkDeleteState();
+}
+
+function updateBulkDeleteState(): void {
+  const selected = state.bulkDeleteSelected.size;
+  elements.bulkDeleteCount.textContent = `${selected} selected`;
+  elements.confirmBulkDeleteButton.disabled = selected === 0;
+  const allSelected =
+    state.chats.length > 0 &&
+    state.chats.every((chat) => state.bulkDeleteSelected.has(chat.id));
+  elements.selectAllChatsInput.checked = allSelected;
+  elements.selectAllChatsInput.indeterminate =
+    selected > 0 && !allSelected;
+}
+
+function setBulkDeleteMode(enabled: boolean): void {
+  state.bulkDeleteMode = enabled;
+  state.bulkDeleteSelected.clear();
+  elements.bulkDeleteBar.classList.toggle("hidden", !enabled);
+  elements.deleteChatsButton.classList.toggle("is-active", enabled);
+  updateChatHistory(state.chats);
 }
 
 function updateMentionMenu(): void {
@@ -2575,6 +2619,14 @@ function handleHostMessage(message: HostMessage): void {
       setActiveTab("settings");
       elements.apiKeyInput.focus();
       break;
+    case "openPanel":
+      if (message.panel === "history" || message.panel === "settings") {
+        setActiveTab(message.panel);
+      }
+      break;
+    case "newChat":
+      startNewChat();
+      break;
     case "preferences":
       if (message.preferences) {
         applyPreferences(message.preferences);
@@ -2652,6 +2704,16 @@ function handleHostMessage(message: HostMessage): void {
       break;
     case "sessionError":
       state.pendingTextSubmission = undefined;
+      state.isConnecting = false;
+      state.sessionReady = false;
+      state.micMuted = false;
+      resetScreenSharing();
+      elements.muteMicButton.classList.remove("is-muted");
+      elements.muteMicButton.title = "Mute microphone";
+      elements.muteMicButton.setAttribute("aria-label", "Mute microphone");
+      stopTimer();
+      cleanupAudio();
+      hideActivityIndicator();
       updateControls();
       showError(message.message ?? "Gemini connection error.");
       setStatus("Connection error", "error");
@@ -2818,7 +2880,12 @@ function handleHostMessage(message: HostMessage): void {
       break;
     case "chatDeleted":
       updateChatHistory(message.chats);
-      if (message.chatId === state.activeChatId) {
+      if (
+        message.chatId === state.activeChatId ||
+        (message.chatIds &&
+          state.activeChatId &&
+          message.chatIds.includes(state.activeChatId))
+      ) {
         state.activeChatId = undefined;
         startNewChat();
       }
@@ -2979,20 +3046,6 @@ function drawOrb(now: number): void {
   }
 }
 
-elements.refreshExtensionButton.addEventListener("click", () => {
-  // Note: window.confirm is not supported in VS Code webviews (it throws),
-  // so reload directly.
-  vscode.postMessage({ type: "refreshExtension" });
-});
-
-elements.settingsButton.addEventListener("click", () => {
-  setActiveTab("settings");
-});
-
-elements.historyButton.addEventListener("click", () => {
-  setActiveTab("history");
-});
-
 elements.backToChatButton.addEventListener("click", () => {
   setActiveTab("chat");
   elements.textInput.focus();
@@ -3003,8 +3056,36 @@ elements.backFromHistoryButton.addEventListener("click", () => {
   elements.textInput.focus();
 });
 
-elements.newChatButton.addEventListener("click", startNewChat);
 elements.newChatFromHistoryButton.addEventListener("click", startNewChat);
+
+elements.deleteChatsButton.addEventListener("click", () => {
+  if (state.chats.length === 0) {
+    return;
+  }
+  setBulkDeleteMode(!state.bulkDeleteMode);
+});
+
+elements.selectAllChatsInput.addEventListener("change", () => {
+  if (elements.selectAllChatsInput.checked) {
+    state.chats.forEach((chat) => state.bulkDeleteSelected.add(chat.id));
+  } else {
+    state.bulkDeleteSelected.clear();
+  }
+  updateChatHistory(state.chats);
+});
+
+elements.confirmBulkDeleteButton.addEventListener("click", () => {
+  const chatIds = [...state.bulkDeleteSelected];
+  if (chatIds.length === 0) {
+    return;
+  }
+  setBulkDeleteMode(false);
+  vscode.postMessage({ type: "deleteChats", chatIds });
+});
+
+elements.cancelBulkDeleteButton.addEventListener("click", () => {
+  setBulkDeleteMode(false);
+});
 
 elements.configureApiButton.addEventListener("click", () => {
   setActiveTab("settings");

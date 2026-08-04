@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="media/gemini-x.png" alt="GeminiX" width="96" />
+  <img src="media/cover.png" alt="GeminiX" width="96" />
 </p>
 
 <h1 align="center">GeminiX</h1>
@@ -11,7 +11,7 @@
 <p align="center">
   <img alt="VS Code" src="https://img.shields.io/badge/VS_Code-^1.96.0-007ACC?logo=visualstudiocode" />
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green" />
-  <img alt="Version" src="https://img.shields.io/badge/version-0.6.1-blue" />
+  <img alt="Version" src="https://img.shields.io/badge/version-0.6.4-blue" />
   <img alt="Gemini" src="https://img.shields.io/badge/Gemini-3.1_Flash_Live-8E75B2" />
 </p>
 
@@ -25,7 +25,11 @@
 
 ### Gemini Live Voice Conversation
 
-Real-time, streaming voice interaction with Gemini. Speak your question naturally, hear responses spoken back, and follow along with live input/output transcripts and audio playback. Choose from 30+ distinct Gemini voices.
+Real-time, streaming voice interaction with Gemini. Speak your question naturally, hear responses spoken back, and follow along with live input/output transcripts and audio playback. Choose from 30+ distinct Gemini voices. A session timer tracks your elapsed live time.
+
+### Editable Voice Questions
+
+Spoken questions are transcribed by automatic speech recognition, which can mis-hear technical terms (commands, package names, files, APIs). Every voice question in the transcript has **edit**, **copy**, and **regenerate** actions — correct the text and send it to re-ask Gemini with the corrected question.
 
 ### Automatic Editor Context
 
@@ -34,6 +38,14 @@ Select code in any editor — GeminiX captures the exact selection plus surround
 ### Intelligent Workspace Search
 
 Gemini can pause mid-response, search your workspace for relevant files or symbols, read specific sections, and continue its answer — all through VS Code's native tooling. An in-memory lexical and filename index (kept current by a file watcher) enables fast, targeted retrieval without a vector database.
+
+### Web Search
+
+Gemini can also pause and search the public web for current or externally verifiable information — Wikipedia, Stack Overflow, MDN, Hacker News, GitHub, and package registries (npm, PyPI, crates.io, RubyGems, Go). It analyzes the results and cites source URLs in its answer.
+
+### URL Analysis
+
+Paste an HTTP(S) URL into a typed question and GeminiX fetches the page for Gemini to analyze — including GitHub repositories, where it reads the README and key files. Pages are converted to clean markdown so only the relevant text is sent to Gemini.
 
 ### Rich Attachments
 
@@ -49,9 +61,12 @@ Every code block in the response includes:
 
 ### Live Session Controls
 
-- Mute — Toggle microphone mute during a live session. Stops audio from being sent to Gemini while keeping the session alive.
+- Mute mic — Toggle microphone mute during a live session. Stops audio from being sent to Gemini while keeping the session alive.
+- Mute speaker — Mute Gemini's voice output independently of the microphone.
+- Share screen — Share your active editor with Gemini as live video frames so it can see the code you're working on.
 - Stop — Immediately halts audio playback and tells Gemini to stop generating. The model stays silent until your next question.
 - Auto-interrupt — When enabled, speaking while Gemini is responding will automatically interrupt the current reply.
+- Auto-reconnect — If the live session drops (network, quota, or server close), GeminiX reconnects automatically with backoff (up to 3 attempts).
 
 ### Local Chat History
 
@@ -66,6 +81,10 @@ Code blocks are rendered with full Shiki syntax highlighting, matching VS Code's
 - 30+ Gemini voices — Choose from Zephyr, Puck, Kore, Fenrir, and more.
 - 18 languages — English, Hindi, Spanish, French, German, Japanese, Korean, Mandarin Chinese, Arabic, and more.
 - 3 behavior modes — Professional (clear & structured), Friendly (conversational & patient), Expert (deeply technical with control flow, edge cases, and trade-offs).
+
+### Debug Log
+
+A built-in debug log in Settings shows only errors, making it easy to diagnose API, session, or tool failures.
 
 ### Secure API Key Storage
 
@@ -84,12 +103,12 @@ npm install
 npx @vscode/vsce package
 ```
 
-This generates a `.vsix` file (for example, `gemini-x-v0.6.1.vsix`) in the project root, which can then be installed using **Extensions: Install from VSIX...**.
+This generates a `.vsix` file (for example, `gemini-x-v0.6.4.vsix`) in the project root, which can then be installed using **Extensions: Install from VSIX...**.
 
 1. Open VS Code.
 2. Press `Cmd+Shift+P` (macOS) or `Ctrl+Shift+P` (Windows/Linux) to open the Command Palette.
 3. Run **Extensions: Install from VSIX…**.
-4. Select `gemini-x-v0.6.1.vsix`.
+4. Select `gemini-x-v0.6.4.vsix`.
 5. Open **GeminiX** from the Activity Bar (the GeminiX icon).
 6. Click the gear button (⚙️) in GeminiX and save your **Gemini API key** from [Google AI Studio](https://aistudio.google.com/).
 
@@ -134,23 +153,27 @@ When you select code and ask a question, GeminiX captures:
 
 The full selection and retrieved workspace snippets are never rendered in the conversation transcript — only the file name and line range are shown.
 
-### Workspace Search
+### Workspace Search & Web Tools
 
-GeminiX gives Gemini two workspace tools:
+GeminiX gives Gemini a set of tools it can call mid-response:
 
 - `search_workspace` — Searches the in-memory lexical index for filenames, symbols, and keywords.
 - `read_workspace_file` — Reads specific sections of a file by path.
+- `search_web` — Searches the public web (Wikipedia, Stack Overflow, MDN, Hacker News, GitHub, package registries).
+- `fetch_url` — Fetches and analyzes a specific HTTP(S) URL, including GitHub repositories.
 
 Gemini can autonomously decide when to search, read, and incorporate results into its answer — up to 8 tool calls per turn, with up to 7 code snippets returned.
 
-### Mute & Stop Controls
+### Live Session Controls
 
-When a Live session is active, two buttons appear in the GeminiX header:
+When a Live session is active, a control bar appears in the voice stage:
 
-| Button   | Action                                                                                                     |
-| -------- | ---------------------------------------------------------------------------------------------------------- |
-| **Mute** | Toggles microphone audio on/off. The mic icon shows a slash when muted.                                    |
-| **Stop** | Immediately halts audio playback and tells Gemini to stop. Gemini remains silent until your next question. |
+| Button           | Action                                                                                                     |
+| ---------------- | ---------------------------------------------------------------------------------------------------------- |
+| **Mute mic**     | Toggles microphone audio on/off. The mic icon shows a slash when muted.                                    |
+| **Mute speaker** | Mutes Gemini's voice output independently of the microphone.                                               |
+| **Share screen** | Shares your active editor with Gemini as live video frames (≈1 FPS).                                       |
+| **Stop**         | Immediately halts audio playback and tells Gemini to stop. Gemini remains silent until your next question. |
 
 ### Copy & Apply Code
 
@@ -203,15 +226,16 @@ npm run package
 ### Technical Architecture
 
 | Component          | Details                                                                                                                                   |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- | --- | ---------------- | ------------------------------------------------------------------------------ |
 | **AI Model**       | `gemini-3.1-flash-live-preview` via the Gemini Live API (WebSocket).                                                                      |
 | **Voice Input**    | Raw PCM16 audio at 16 kHz, captured via `@picovoice/pvrecorder-node` in the extension host.                                               |
 | **Audio Playback** | PCM16 audio at 24 kHz, rendered in the webview via the Web Audio API.                                                                     |
 | **Microphone**     | Runs in the VS Code extension host (webviews don't have direct mic access). Cross-platform binaries included in the VSIX.                 |
 | **Indexing**       | In-memory lexical and filename index over workspace source files (up to 1,500 files, 384 KB each). Kept current by a `FileSystemWatcher`. |
 | **Text Input**     | Real-time text via Live API `realtimeInput`.                                                                                              |
-| **Image Input**    | Live API video-frame input for attached images (JPEG, PNG, WebP).                                                                         |
-| **Rendering**      | Shiki syntax highlighting with VS Code's `light-plus` and `dark-plus` themes.                                                             |
+| **Image Input**    | Live API video-frame input for attached images (JPEG, PNG, WebP).                                                                         |     | **Screen Share** | Active editor rendered to a canvas and streamed as Live video frames (≈1 FPS). |
+| **Web Search**     | `search_web` tool backed by Wikipedia, Stack Overflow, MDN, Hacker News, GitHub, and package registries.                                  |
+| **URL Analysis**   | `fetch_url` tool that fetches pages (and GitHub READMEs) and converts them to markdown.                                                   |     | **Rendering**    | Shiki syntax highlighting with VS Code's `light-plus` and `dark-plus` themes.  |
 | **History**        | Local JSON files in VS Code's `globalStorage`.                                                                                            |
 
 ---
